@@ -15,12 +15,16 @@ import requests
 import anthropic
 from dotenv import load_dotenv
 
+# Load .env.local first, then .env as fallback
+load_dotenv('.env.local')
 load_dotenv()
 
 # Configure APIs
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Get database URL - prefer pooler connection, strip Prisma-specific params
+_raw_db_url = os.getenv("DATABASE_URL") or os.getenv("DIRECT_URL")
+DATABASE_URL = _raw_db_url.split('?')[0] if _raw_db_url else None  # Remove query params like ?pgbouncer=true
 
 # Initialize Anthropic client
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -541,6 +545,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Fetch competitor news using Serper.dev')
     parser.add_argument('--limit', type=int, help='Limit number of competitors')
+    parser.add_argument('--skip', type=int, default=0, help='Skip first N competitors')
     parser.add_argument('--test', action='store_true', help='Test with 5 competitors')
     parser.add_argument('--clean', action='store_true', help='Clear all news first')
     parser.add_argument('--region', type=str, help='Specific region: global, mena, europe, apac')

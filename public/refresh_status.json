@@ -1,1 +1,11 @@
-{"current": 63, "total": 63, "saved": 6, "elapsed": 1576, "remaining_seconds": 0, "status": "complete"}
+{
+  "status": "error",
+  "current_competitor": null,
+  "processed": 54,
+  "total": 63,
+  "percent_complete": 85,
+  "estimated_seconds_remaining": 135,
+  "started_at": null,
+  "completed_at": null,
+  "error": "connection to server at \"aws-1-eu-west-1.pooler.supabase.com\" (54.247.26.119), port 5432 failed: server closed the connection unexpectedly\n\tThis probably means the server terminated abnormally\n\tbefore or while processing the request.\nserver closed the connection unexpectedly\n\tThis probably means the server terminated abnormally\n\tbefore or while processing the request.\n"
+}
