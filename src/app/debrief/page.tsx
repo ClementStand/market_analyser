@@ -7,9 +7,6 @@ import { Sidebar } from '@/components/Sidebar'
 export default function WeeklyDebrief() {
     const [debrief, setDebrief] = useState<string | null>(null)
     const [loading, setLoading] = useState(false)
-    const [refreshing, setRefreshing] = useState(false)
-    const [refreshStatus, setRefreshStatus] = useState<any>(null)
-    const [showRefreshWarning, setShowRefreshWarning] = useState(false)
     const [itemCount, setItemCount] = useState<number | null>(null)
 
     // Range Options
@@ -49,51 +46,6 @@ export default function WeeklyDebrief() {
         checkCount()
     }, [rangeType])
 
-
-    const handleRefreshClick = () => {
-        setShowRefreshWarning(true)
-    }
-
-    // Polling Logic
-    useEffect(() => {
-        let interval: NodeJS.Timeout
-
-        if (refreshing) {
-            interval = setInterval(async () => {
-                try {
-                    const res = await fetch('/api/refresh/status')
-                    const status = await res.json()
-
-                    if (status.status === 'processing') {
-                        setRefreshStatus(status)
-                    } else if (status.status === 'complete' && refreshStatus?.status === 'processing') {
-                        // Finished
-                        setRefreshing(false)
-                        setRefreshStatus(null)
-                        checkCount() // Refresh data
-                    }
-                } catch (e) {
-                    console.error("Polling error", e)
-                }
-            }, 2000)
-        }
-
-        return () => clearInterval(interval)
-    }, [refreshing])
-
-    const confirmRefresh = async () => {
-        setShowRefreshWarning(false)
-        setRefreshing(true)
-        try {
-            await fetch('/api/refresh', { method: 'POST' })
-            // Polling effect handles the rest
-        } catch (error) {
-            console.error("Refresh failed", error)
-            setRefreshing(false)
-        }
-    }
-
-
     const [lastGeneratedAt, setLastGeneratedAt] = useState<string | null>(null)
 
     // Load from LocalStorage on mount
@@ -128,13 +80,13 @@ export default function WeeklyDebrief() {
                 body: JSON.stringify(payload)
             })
             const data = await res.json()
-            setDebrief(data.debrief)
+            setDebrief(data.response || data.debrief)
 
             // Save to LocalStorage
             const now = new Date().toISOString()
             setLastGeneratedAt(now)
             localStorage.setItem('abuzz_weekly_debrief', JSON.stringify({
-                content: data.debrief,
+                content: data.response || data.debrief,
                 generatedAt: now
             }))
 
@@ -197,14 +149,6 @@ export default function WeeklyDebrief() {
                                 Print / Save PDF
                             </button>
                             <button
-                                onClick={handleRefreshClick}
-                                disabled={refreshing || loading}
-                                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md transition-colors disabled:opacity-50 flex items-center gap-2"
-                            >
-                                {refreshing ? <div className="w-4 h-4 border-2 border-slate-400 border-t-white rounded-full animate-spin" /> : "🔄"}
-                                Refresh Data
-                            </button>
-                            <button
                                 onClick={generateDebrief}
                                 disabled={loading || itemCount === 0}
                                 className="px-6 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-cyan-900/20"
@@ -256,80 +200,6 @@ export default function WeeklyDebrief() {
                                     ? "No new intelligence found in this period."
                                     : "Ready to generate. Click 'Generate Report' to analyze " + itemCount + " items."}
                             </p>
-                        </div>
-                    )}
-
-                    {/* Live Progress Modal */}
-                    {refreshing && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-                            <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-6 shadow-2xl relative">
-                                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                                    <div className="w-5 h-5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                                    Refreshing Intelligence...
-                                </h3>
-
-                                {refreshStatus ? (
-                                    <div className="space-y-4">
-                                        <div className="flex justify-between text-sm text-slate-400">
-                                            <span>Processing competitor {refreshStatus.current} of {refreshStatus.total}</span>
-                                            <span>{Math.round((refreshStatus.current / refreshStatus.total) * 100)}%</span>
-                                        </div>
-
-                                        {/* Progress Bar */}
-                                        <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                                            <div
-                                                className="h-full bg-cyan-500 transition-all duration-500 ease-out"
-                                                style={{ width: `${(refreshStatus.current / refreshStatus.total) * 100}%` }}
-                                            />
-                                        </div>
-
-                                        <div className="flex justify-between items-end">
-                                            <div className="text-xs text-slate-500">
-                                                Est. remaining time:
-                                            </div>
-                                            <div className="text-xl font-mono text-cyan-400 font-bold">
-                                                {refreshStatus.remaining_seconds ?
-                                                    `${Math.floor(refreshStatus.remaining_seconds / 60)}m ${refreshStatus.remaining_seconds % 60}s`
-                                                    : 'Calculating...'}
-                                            </div>
-                                        </div>
-
-                                        <p className="text-xs text-slate-600 mt-2 text-center">
-                                            Please do not close this tab.
-                                        </p>
-                                    </div>
-                                ) : (
-                                    <p className="text-slate-400">Starting process...</p>
-                                )}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Refresh Warning Modal (Initial Confirmation) */}
-                    {showRefreshWarning && !refreshing && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-                            <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-6 shadow-2xl relative">
-                                <h3 className="text-xl font-bold text-white mb-2">Refresh Intelligence?</h3>
-                                <p className="text-slate-400 text-sm mb-6">
-                                    This will fetch the latest data from all sources and run AI analysis.
-                                    <br /><br />
-                                    <span className="text-amber-400 font-medium">This process typically takes about 2 minutes.</span>
-                                </p>
-                                <div className="flex justify-end gap-3">
-                                    <button
-                                        onClick={() => setShowRefreshWarning(false)}
-                                        className="px-4 py-2 text-slate-400 hover:text-white transition-colors"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={confirmRefresh}
-                                        className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-medium shadow-lg shadow-cyan-900/20"
-                                    >
-                                        Start Refresh
-                                    </button>
-                                </div>
-                            </div>
                         </div>
                     )}
                 </div>
