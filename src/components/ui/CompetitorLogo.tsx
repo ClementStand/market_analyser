@@ -76,7 +76,7 @@ export function CompetitorLogo({ name, website, className }: CompetitorLogoProps
                 key={logoUrl}
                 src={logoUrl}
                 alt={name}
-                className={cn("object-contain bg-white", className)}
+                className="w-full h-full object-contain bg-white rounded-full"
                 onError={handleError}
                 onLoad={handleLoad}
             />
