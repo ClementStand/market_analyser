@@ -6,111 +6,59 @@ import { Sidebar } from '@/components/Sidebar'
 
 export default function WeeklyDebrief() {
     const [debrief, setDebrief] = useState<string | null>(null)
-    const [loading, setLoading] = useState(false)
+    const [loading, setLoading] = useState(true)
     const [itemCount, setItemCount] = useState<number | null>(null)
-
-    // Range Options
-    const [rangeType] = useState<'7d'>('7d')
-
-    // Calculate dates based on range type
-    const getDates = () => {
-        const end = new Date()
-        const start = subDays(end, 7)
-        return { start, end }
-    }
-
-    // Fetch Count
-    const checkCount = async () => {
-        const { start, end } = getDates()
-
-        const payload: any = { mode: 'count' }
-        if (start) {
-            payload.startDate = start.toISOString()
-            payload.endDate = end.toISOString()
-        }
-
-        try {
-            const res = await fetch('/api/debrief', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            const data = await res.json()
-            setItemCount(data.count)
-        } catch (e) {
-            console.error(e)
-        }
-    }
-
-    useEffect(() => {
-        checkCount()
-    }, [rangeType])
-
     const [lastGeneratedAt, setLastGeneratedAt] = useState<string | null>(null)
+    const [periodStart, setPeriodStart] = useState<Date | null>(null)
+    const [periodEnd, setPeriodEnd] = useState<Date | null>(null)
 
-    // Load from LocalStorage on mount
+    // Fetch latest debrief from DB + count
     useEffect(() => {
-        const saved = localStorage.getItem('abuzz_weekly_debrief')
-        if (saved) {
+        const fetchData = async () => {
             try {
-                const parsed = JSON.parse(saved)
-                setDebrief(parsed.content)
-                setLastGeneratedAt(parsed.generatedAt)
+                // Fetch count and latest debrief in parallel
+                const [countRes, debriefRes] = await Promise.all([
+                    fetch('/api/debrief', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            mode: 'count',
+                            startDate: subDays(new Date(), 7).toISOString(),
+                            endDate: new Date().toISOString(),
+                        })
+                    }),
+                    fetch('/api/debrief', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode: 'latest' })
+                    })
+                ])
+
+                const countData = await countRes.json()
+                setItemCount(countData.count)
+
+                const debriefData = await debriefRes.json()
+                if (debriefData.response) {
+                    setDebrief(debriefData.response)
+                    setLastGeneratedAt(debriefData.generatedAt)
+                    setPeriodStart(new Date(debriefData.periodStart))
+                    setPeriodEnd(new Date(debriefData.periodEnd))
+                }
             } catch (e) {
-                console.error("Failed to parse saved debrief", e)
+                console.error('Failed to load debrief:', e)
+            } finally {
+                setLoading(false)
             }
         }
+        fetchData()
     }, [])
 
-    const generateDebrief = async () => {
-        setLoading(true)
-        setDebrief(null)
-        const { start, end } = getDates()
-
-        const payload: any = { mode: 'generate' }
-        if (start) {
-            payload.startDate = start.toISOString()
-            payload.endDate = end.toISOString()
-        }
-
-        try {
-            const res = await fetch('/api/debrief', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            const data = await res.json()
-
-            if (!res.ok || data.error) {
-                setDebrief(`Error: ${data.details || data.error || 'Unknown error'}. Please try again.`)
-                return
-            }
-
-            const content = data.response || data.debrief
-            setDebrief(content)
-
-            // Save to LocalStorage
-            const now = new Date().toISOString()
-            setLastGeneratedAt(now)
-            localStorage.setItem('abuzz_weekly_debrief', JSON.stringify({
-                content,
-                generatedAt: now
-            }))
-
-        } catch (error) {
-            console.error('Failed to generate debrief:', error)
-            setDebrief('Error generating debrief. Please try again.')
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    // Handle printing
     const handlePrint = () => {
         window.print()
     }
 
-    const { start, end } = getDates()
+    const displayStart = periodStart || subDays(new Date(), 7)
+    const displayEnd = periodEnd || new Date()
 
     return (
         <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans">
@@ -127,19 +75,16 @@ export default function WeeklyDebrief() {
                         <div>
                             <h1 className="text-3xl font-bold text-white mb-2 print:text-black">Weekly Intelligence Debrief</h1>
                             <div className="flex items-center gap-4 text-slate-400 print:text-slate-600">
-                                {/* Range Selector Removed - Weekly Only */}
                                 <span className="print:block">
-                                    {`${format(start!, 'MMM d')} - ${format(end, 'MMM d, yyyy')}`}
+                                    {`${format(displayStart, 'MMM d')} - ${format(displayEnd, 'MMM d, yyyy')}`}
                                 </span>
 
-                                {/* Item Count Badge */}
                                 {itemCount !== null && (
                                     <span className={`text-xs px-2 py-1 rounded-full border ${itemCount > 0 ? 'bg-cyan-950/30 text-cyan-400 border-cyan-900/50' : 'bg-red-950/30 text-red-400 border-red-900/50'}`}>
                                         {itemCount} signals found
                                     </span>
                                 )}
 
-                                {/* Last Generated Timestamp */}
                                 {lastGeneratedAt && (
                                     <span className="text-xs text-slate-500 border-l border-slate-800 pl-4 ml-2">
                                         Generated: {format(new Date(lastGeneratedAt), 'MMM d, h:mm a')}
@@ -155,22 +100,6 @@ export default function WeeklyDebrief() {
                             >
                                 Print / Save PDF
                             </button>
-                            <button
-                                onClick={generateDebrief}
-                                disabled={loading || itemCount === 0}
-                                className="px-6 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-cyan-900/20"
-                            >
-                                {loading ? (
-                                    <>
-                                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                        Generating...
-                                    </>
-                                ) : (
-                                    <>
-                                        <span>✨</span> Generate Report
-                                    </>
-                                )}
-                            </button>
                         </div>
                     </div>
 
@@ -180,13 +109,12 @@ export default function WeeklyDebrief() {
                             <div className="w-16 h-16 bg-slate-800 rounded-full mx-auto mb-6 flex items-center justify-center">
                                 <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin"></div>
                             </div>
-                            <h2 className="text-xl font-medium text-slate-300">Analyzing Market Intelligence...</h2>
-                            <p className="text-slate-500 mt-2">Processing {itemCount} news items for strategic insights.</p>
+                            <h2 className="text-xl font-medium text-slate-300">Loading Debrief...</h2>
                         </div>
                     )}
 
                     {/* Report Content */}
-                    {debrief && (
+                    {debrief && !loading && (
                         <div className="prose prose-invert prose-slate max-w-none print:prose-black">
                             <style jsx global>{`
                 .prose h2 { color: #22d3ee; margin-top: 2em; border-bottom: 1px solid #1e293b; padding-bottom: 0.5em; }
@@ -203,10 +131,11 @@ export default function WeeklyDebrief() {
                     {!debrief && !loading && (
                         <div className="py-20 text-center border-2 border-dashed border-slate-800 rounded-xl bg-slate-900/50">
                             <p className="text-slate-500">
-                                {itemCount === 0
-                                    ? "No new intelligence found in this period."
-                                    : "Ready to generate. Click 'Generate Report' to analyze " + itemCount + " items."}
+                                No debrief generated yet. Run the generator script locally:
                             </p>
+                            <code className="block mt-4 text-cyan-400 text-sm bg-slate-900 px-4 py-2 rounded-lg inline-block">
+                                ./.venv/bin/python scripts/debrief_generator.py
+                            </code>
                         </div>
                     )}
                 </div>

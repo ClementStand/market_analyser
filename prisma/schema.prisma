@@ -33,6 +33,15 @@ model CompetitorNews {
   @@index([isRead])
 }
 
+model Debrief {
+  id          String   @id @default(cuid())
+  content     String
+  periodStart DateTime
+  periodEnd   DateTime
+  itemCount   Int
+  generatedAt DateTime @default(now())
+}
+
 generator client {
   provider = "prisma-client-js"
 }
