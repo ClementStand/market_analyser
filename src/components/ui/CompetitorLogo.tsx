@@ -25,8 +25,7 @@ export function CompetitorLogo({ name, website, className }: CompetitorLogoProps
             const fullUrl = cleanUrl.startsWith('http') ? cleanUrl : `https://${cleanUrl}`
             const domain = new URL(fullUrl).hostname
 
-            if (stage === 0) return `https://logo.clearbit.com/${domain}`
-            else if (stage === 1) return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`
+            if (stage === 0) return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`
             return null
         } catch (error) {
             return null
@@ -51,7 +50,7 @@ export function CompetitorLogo({ name, website, className }: CompetitorLogoProps
 
     const logoUrl = getLogoUrl(website, fallbackStage)
 
-    if (!logoUrl || fallbackStage >= 2) {
+    if (!logoUrl || fallbackStage >= 1) {
         const initials = name.substring(0, 2).toUpperCase()
         return (
             <div

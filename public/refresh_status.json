@@ -1,10 +1,10 @@
 {
   "status": "running",
-  "current_competitor": "LocusLabs (Atrius)",
-  "processed": 22,
+  "current_competitor": "PearlQuest",
+  "processed": 56,
   "total": 63,
-  "percent_complete": 34,
-  "estimated_seconds_remaining": 615,
+  "percent_complete": 88,
+  "estimated_seconds_remaining": 105,
   "started_at": null,
   "completed_at": null,
   "error": null
