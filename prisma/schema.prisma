@@ -5,6 +5,11 @@ model Competitor {
   description String?
   industry    String?
   region      String?
+  headquarters  String?
+  employeeCount String?
+  revenue       String?
+  fundingStatus String?
+  keyMarkets    String?
   status      String   @default("active")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

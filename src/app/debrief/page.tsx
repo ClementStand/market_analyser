@@ -2,6 +2,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { format, subDays } from 'date-fns'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Sidebar } from '@/components/Sidebar'
 
 export default function WeeklyDebrief() {
@@ -120,10 +121,16 @@ export default function WeeklyDebrief() {
                 .prose h2 { color: #22d3ee; margin-top: 2em; border-bottom: 1px solid #1e293b; padding-bottom: 0.5em; }
                 .prose h3 { color: #cbd5e1; margin-top: 1.5em; }
                 .prose strong { color: #fff; }
+                .prose table { border-collapse: collapse; width: 100%; margin: 1.5em 0; }
+                .prose th { background: #0f172a; color: #22d3ee; padding: 0.75em 1em; border: 1px solid #1e293b; text-align: left; font-size: 0.85em; }
+                .prose td { padding: 0.75em 1em; border: 1px solid #1e293b; font-size: 0.85em; }
+                .prose tr:nth-child(even) { background: #0f172a40; }
                 .print\\:prose-black h2 { color: #000; border-bottom-color: #ddd; }
                 .print\\:prose-black strong { color: #000; }
+                .print\\:prose-black th { background: #f1f5f9; color: #000; border-color: #cbd5e1; }
+                .print\\:prose-black td { border-color: #cbd5e1; }
               `}</style>
-                            <ReactMarkdown>{debrief}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{debrief}</ReactMarkdown>
                         </div>
                     )}
 

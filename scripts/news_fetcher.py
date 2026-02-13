@@ -201,6 +201,12 @@ def save_news_item(competitor_id, news_item):
         if news_date > now:
             news_date = now
 
+        # Skip news before 2025
+        cutoff = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+        if news_date < cutoff:
+            conn.close()
+            return False, "pre_2025"
+
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         
         details = news_item.get('details', {})

@@ -55,6 +55,9 @@ async function main() {
         const keyMarkets = record['Key Markets']?.trim() || null
         const hqLocation = record['HQ Location']?.trim() || null
         const primarySolution = record['Primary Solution']?.trim() || null
+        const employees = record['Approx Employees']?.trim() || null
+        const revenue = record['Est. Revenue (USD)']?.trim() || null
+        const fundingStatus = record['Funding/Status']?.trim() || null
 
         await prisma.competitor.create({
             data: {
@@ -63,6 +66,11 @@ async function main() {
                 description: primarySolution,
                 industry: category,
                 region: keyMarkets || hqLocation,
+                headquarters: hqLocation,
+                employeeCount: employees,
+                revenue: revenue,
+                fundingStatus: fundingStatus,
+                keyMarkets: keyMarkets,
                 status: 'active'
             }
         })

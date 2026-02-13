@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, Globe, Brain, UserCheck, Activity, Calendar } from "lucide-react"
+import { ArrowLeft, Globe, Brain, UserCheck, Activity, Calendar, MapPin, Users, DollarSign, TrendingUp } from "lucide-react"
 import { format } from 'date-fns'
 import NewsCard from "@/components/ui/NewsCard"
 import { prisma } from '@/lib/prisma'
@@ -107,6 +107,63 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     {/* Left Column: Stats & Info */}
                     <div className="space-y-6">
+                        {/* Company Overview Widget */}
+                        {(competitor.headquarters || competitor.employeeCount || competitor.revenue || competitor.keyMarkets || competitor.fundingStatus) && (
+                            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+                                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-cyan-400" />
+                                    Company Overview
+                                </h3>
+                                <div className="space-y-3">
+                                    {competitor.headquarters && (
+                                        <div className="flex items-start gap-3">
+                                            <MapPin className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Headquarters</div>
+                                                <div className="text-sm text-slate-200 font-medium">{competitor.headquarters}</div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {competitor.employeeCount && (
+                                        <div className="flex items-start gap-3">
+                                            <Users className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Employees</div>
+                                                <div className="text-sm text-slate-200 font-medium">{competitor.employeeCount}</div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {competitor.revenue && (
+                                        <div className="flex items-start gap-3">
+                                            <DollarSign className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Est. Revenue</div>
+                                                <div className="text-sm text-slate-200 font-medium">{competitor.revenue}</div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {competitor.keyMarkets && (
+                                        <div className="flex items-start gap-3">
+                                            <Globe className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Key Markets</div>
+                                                <div className="text-sm text-slate-200 font-medium">{competitor.keyMarkets}</div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {competitor.fundingStatus && (
+                                        <div className="flex items-start gap-3">
+                                            <TrendingUp className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Funding / Status</div>
+                                                <div className="text-sm text-slate-200 font-medium">{competitor.fundingStatus}</div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
                         {/* Tech Stack Widget */}
                         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
                             <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -170,7 +227,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                         </div>
 
                                         {/* Date Label */}
-                                        <div className="absolute -left-2 top-0 text-xs font-mono text-slate-500 uppercase tracking-widest bg-slate-950 px-2 py-1 rounded">
+                                        <div className="text-xs font-mono text-slate-500 uppercase tracking-widest mb-2">
                                             {format(new Date(item.date), 'MMM d')}
                                         </div>
 
