@@ -43,6 +43,9 @@ prisma/dev.db.backup
 backup.sql
 data-export.json
 
+# serper api cache
+scripts/cache/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

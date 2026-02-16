@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 export async function GET() {
     try {
         const competitors = await prisma.competitor.findMany({
+            where: { status: 'active' },
             include: {
                 _count: {
                     select: { news: true }

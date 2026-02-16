@@ -1,0 +1,2 @@
+.venv/bin/python scripts/news_fetcher.py --competitor "Mappedin"
+.venv/bin/python scripts/news_fetcher.py --competitor "Mappedin" --days 420

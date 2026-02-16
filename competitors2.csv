@@ -1,0 +1,26 @@
+Category,Company,Website,HQ Location,Approx Employees,Est. Revenue (USD),Key Markets,Primary Solution,Funding/Status
+Your Business,Abuzz,https://www.abuzzsolutions.com/,Australia / UAE,50-100,Unknown,Global / MENA / APAC,Integrated Kiosks & Wayfinding,Private
+Your Business,Abuzz MENA,www.abuzzmena.com,UAE,10-50,Unknown,MENA,Integrated Kiosks & Wayfinding,Private
+Direct Competitor (Kiosk Focus),ViaDirect,www.viadirect.fr,France,50-200,$10M - $25M,Global / EU / MENA,Hardware Kiosks + 3D Wayfinding,Private
+Direct Competitor (Kiosk Focus),Acquire Digital,https://acquiredigital.com/,UK / USA,50-100,$5M - $10M,US / UK,Digital Signage + Wayfinding,Private
+Direct Competitor (Kiosk Focus),3d-berlin,https://3d-berlin.com/en/start/,Germany,50-100,$5M+,Europe,3D Indoor Navigation,Private
+Direct Competitor (SaaS Mapping),Mappedin,www.mappedin.com/,Canada,50-200,$5M - $15M,Global / US,SaaS Mapping Platform (Web/Mobile),Series A ($10M+)
+Direct Competitor (SaaS Mapping),MazeMap,mazemap.com,Norway,11-50,$5M+,Global / EU,University/Hospital Wayfinding,Acquired (Cisco?)
+Direct Competitor (SaaS Mapping),MapsPeople,www.mapspeople.com/,Denmark,100-200,$10M+,Global,Google Maps Integration,Public (Nasdaq First North)
+Direct Competitor (SaaS Mapping),VisioGlobe,https://visioglobe.com/,France,10-50,$2M - $5M,Europe / MENA,3D Map Rendering Engine,Private
+Direct Competitor (SaaS Mapping),LocusLabs (Atrius),https://atrius.com/,USA (Acq by Acuity),N/A (Integrated),N/A,Global / US,Airport Wayfinding,Acquired by Acuity Brands
+Direct Competitor (SaaS Mapping),Living Map,www.livingmap.com,UK,11-50,$2M - $5M,UK / Global,Digital Mapping & Routing,Series A
+Direct Competitor (SaaS Mapping),Wemap,https://getwemap.com/,France,11-50,$2M - $5M,Europe,Smart Maps & AR,Private
+Direct Competitor (SaaS Mapping),Mapxus,https://www.mapxus.com/,Hong Kong,50-100,Unknown,APAC,Indoor Mapping Infrastructure,Series B
+Direct Competitor (Signage Platform),22Miles,https://www.22miles.com/,USA,50-200,$25M - $50M,Global / US,CMS + Wayfinding Module,Private
+Competitor (Indoor Positioning),Pointr,www.pointr.tech,UK,50-100,$5M+,Global,Deep Location / Blue Dot,Series A
+Competitor (Indoor Positioning),IndoorAtlas,https://www.indooratlas.com/,Finland,11-50,$2M - $5M,Global,Geomagnetic Positioning (IPS),Series B
+Competitor (Indoor Positioning),Situm,www.situm.com,Spain,11-50,$1M - $5M,Europe,Indoor Positioning,Private
+Competitor (Indoor Positioning),Pole Star,https://www.polestar.eu/,France,50-100,$5M+,Europe,Indoor Positioning,Private
+Competitor (Indoor Positioning),Mapsted,https://mapsted.com/,Canada,50-100,Unknown,Global,Hardware-Free Indoor Navigation,Unfunded
+Competitor (Specialist/Niche),InMapz,https://inmapz.com/,USA,11-50,Unknown,North America,Smart Mall Solutions,Private
+Competitor (Specialist/Niche),PAM,https://pam.co/,Australia/USA,11-50,Unknown,Global,Smart Navigation Platform,Private
+Competitor (Specialist/Niche),Connexient (Everbridge),https://www.everbridge.com/products/digital-wayfinding/,USA,50-200,Acquired ($20M),US / Healthcare,Healthcare Wayfinding,Acquired by Everbridge
+Competitor (Specialist/Niche),Proximi.io,https://proximi.io/,Finland,11-50,<$5M,Global,Unified Positioning Platform,Seed
+Competitor (AI Wayfinding),iPera,https://ipera.ai/,South Korea / Global,50-100,Unknown,APAC / Global,AI-Powered Interactive Wayfinding & Mall Experience,Private
+Competitor (Indoor Positioning),Penguin In,https://penguinin.com/,Israel / Global,11-50,Unknown,Global,Indoor Positioning & Wayfinding Navigation,Private

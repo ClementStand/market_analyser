@@ -24,6 +24,11 @@ export async function GET(request: Request) {
                             contains: 'example.com'
                         }
                     }
+                },
+                {
+                    competitor: {
+                        status: 'active'
+                    }
                 }
             ]
         }

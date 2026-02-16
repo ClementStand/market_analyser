@@ -6,6 +6,7 @@ Uses Serper.dev (Google Search API) + Claude AI (Anthropic) for analysis
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import datetime
+import hashlib
 import json
 import os
 import time
@@ -29,6 +30,41 @@ DATABASE_URL = _raw_db_url.split('?')[0] if _raw_db_url else None  # Remove quer
 # Initialize Anthropic client
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# --- Serper API cache (file-based, 7-day TTL) ---
+SERPER_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache', 'serper')
+SERPER_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
+
+
+def _serper_cache_key(query, region, search_type):
+    raw = f"{query}|{region}|{search_type}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _cache_get(query, region, search_type):
+    key = _serper_cache_key(query, region, search_type)
+    cache_file = os.path.join(SERPER_CACHE_DIR, f"{key}.json")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file) as f:
+                data = json.load(f)
+            age = time.time() - data.get('cached_at', 0)
+            if age < SERPER_CACHE_TTL:
+                return data.get('results', [])
+        except Exception:
+            pass
+    return None
+
+
+def _cache_set(query, region, search_type, results):
+    os.makedirs(SERPER_CACHE_DIR, exist_ok=True)
+    key = _serper_cache_key(query, region, search_type)
+    cache_file = os.path.join(SERPER_CACHE_DIR, f"{key}.json")
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump({'cached_at': time.time(), 'results': results}, f)
+    except Exception:
+        pass
+
 # Priority competitors (most likely to have news)
 PRIORITY_COMPETITORS = [
     "Mappedin", "22Miles", "Pointr", "MapsPeople", "Broadsign",
@@ -42,6 +78,43 @@ REGIONS = {
     'europe': {'gl': 'gb', 'hl': 'en'},   # Europe (via UK) in English
     'ksa': {'gl': 'sa', 'hl': 'en'},      # Saudi Arabia
 }
+
+# Native language search configs keyed by lowercase country name
+HQ_NATIVE_REGIONS = {
+    'france':       {'gl': 'fr', 'hl': 'fr', '_label': 'france_fr'},
+    'germany':      {'gl': 'de', 'hl': 'de', '_label': 'germany_de'},
+    'spain':        {'gl': 'es', 'hl': 'es', '_label': 'spain_es'},
+    'norway':       {'gl': 'no', 'hl': 'no', '_label': 'norway_no'},
+    'denmark':      {'gl': 'dk', 'hl': 'da', '_label': 'denmark_da'},
+    'finland':      {'gl': 'fi', 'hl': 'fi', '_label': 'finland_fi'},
+    'sweden':       {'gl': 'se', 'hl': 'sv', '_label': 'sweden_sv'},
+    'switzerland':  {'gl': 'ch', 'hl': 'de', '_label': 'switzerland_de'},
+    'netherlands':  {'gl': 'nl', 'hl': 'nl', '_label': 'netherlands_nl'},
+    'italy':        {'gl': 'it', 'hl': 'it', '_label': 'italy_it'},
+    'israel':       {'gl': 'il', 'hl': 'iw', '_label': 'israel_iw'},
+    'south korea':  {'gl': 'kr', 'hl': 'ko', '_label': 'korea_ko'},
+    'korea':        {'gl': 'kr', 'hl': 'ko', '_label': 'korea_ko'},
+    'japan':        {'gl': 'jp', 'hl': 'ja', '_label': 'japan_ja'},
+    'hong kong':    {'gl': 'hk', 'hl': 'zh-tw', '_label': 'hongkong_zh'},
+    'china':        {'gl': 'cn', 'hl': 'zh-cn', '_label': 'china_zh'},
+    'poland':       {'gl': 'pl', 'hl': 'pl', '_label': 'poland_pl'},
+}
+# Countries where English is primary — no native-language search needed
+ENGLISH_SPEAKING_HQ = {'uk', 'usa', 'canada', 'australia', 'ireland', 'new zealand', 'singapore'}
+
+
+def get_native_region(headquarters):
+    """Return native language search config for a non-English-speaking HQ, or None."""
+    if not headquarters:
+        return None
+    hq_lower = headquarters.lower()
+    for eng in ENGLISH_SPEAKING_HQ:
+        if eng in hq_lower:
+            return None
+    for country, config in HQ_NATIVE_REGIONS.items():
+        if country in hq_lower:
+            return config
+    return None
 
 # URLs that indicate non-news content (product pages, sales, profiles)
 BLOCKED_URL_PATTERNS = [
@@ -173,8 +246,8 @@ def get_competitors():
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT id, name, website, industry, region 
-        FROM "Competitor" 
+        SELECT id, name, website, industry, region, headquarters
+        FROM "Competitor"
         WHERE status = 'active' OR status IS NULL
     """)
     all_competitors = cursor.fetchall()
@@ -240,11 +313,11 @@ def save_news_item(competitor_id, news_item):
         if news_date > now:
             news_date = now
 
-        # Skip news before 2024
-        cutoff = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        # Skip news before 2025
+        cutoff = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
         if news_date < cutoff:
             conn.close()
-            return False, "pre_2024"
+            return False, "pre_2025"
 
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         
@@ -316,106 +389,128 @@ def get_all_existing_urls():
 
 
 def search_serper(query, search_type='news', region='global', num_results=10, date_restrict=None, tbs_val=None):
-    """Search using Serper.dev API"""
+    """Search using Serper.dev API (with 7-day file cache to save credits).
+    `region` can be a string key from REGIONS or a native-language dict with gl/hl/_label keys.
+    """
+    # Normalise: support both string keys and native-language dicts
+    if isinstance(region, dict):
+        region_config = region
+        region_label = region.get('_label', f"{region.get('gl', '?')}_{region.get('hl', '?')}")
+    else:
+        region_config = REGIONS.get(region, REGIONS['global'])
+        region_label = region
+
+    # Check cache first
+    cached = _cache_get(query, region_label, search_type)
+    if cached is not None:
+        print(f"      [CACHED] {region_label}: {query[:60]}")
+        return cached
+
     if not SERPER_API_KEY:
         print("      ERROR: SERPER_API_KEY not set in .env")
         return []
-    
+
     url = f"https://google.serper.dev/{search_type}"
-    
-    region_config = REGIONS.get(region, REGIONS['global'])
-    
+
     payload = {
         "q": query,
         "gl": region_config['gl'],
         "hl": region_config['hl'],
         "num": num_results
     }
-    
+
     # Add date restriction if provided
     if tbs_val:
         payload["tbs"] = tbs_val
     elif date_restrict:
         payload["tbs"] = f"qdr:{date_restrict}"
-    
+
     headers = {
         "X-API-KEY": SERPER_API_KEY,
         "Content-Type": "application/json"
     }
-    
+
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
+
         if response.status_code == 403 or (response.status_code == 400 and "credits" in response.text.lower()):
              print(f"      ❌ ERROR: Serper API credits exhausted! Please check your plan.")
              return []
 
         response.raise_for_status()
         data = response.json()
-        
+
         if search_type == 'news':
-            return data.get('news', [])
+            results = data.get('news', [])
         else:
-            return data.get('organic', [])
-            
+            results = data.get('organic', [])
+
+        print(f"      [API]    {region_label}: {query[:60]}")
+        _cache_set(query, region_label, search_type, results)
+        return results
+
     except requests.exceptions.RequestException as e:
         print(f"      Serper error: {e}")
         return []
 
 
-def search_news(competitor_name, regions_to_search=['global', 'mena', 'europe', 'australia'], days_back=None):
-    """Search for news about a competitor across multiple regions"""
+def search_news(competitor_name, regions_to_search=['global', 'mena', 'europe', 'australia'], days_back=None, native_region=None):
+    """Search for news about a competitor across multiple regions.
+    native_region: optional dict {'gl':..., 'hl':..., '_label':...} for the competitor's home language.
+    Native language results are collected separately and always appended (not subject to the 25-cap cutoff).
+    """
     all_results = []
     seen_urls = set()
     filtered_count = 0
-    
-    queries = [
-        f'"{competitor_name}" contract OR deal OR partnership OR launch OR expansion',
-        f'"{competitor_name}" mall OR airport OR hospital OR university',
-        f'"{competitor_name}" wayfinding OR "digital signage" OR kiosk',
-        f'"{competitor_name}" "virtual assistant" OR "directory" OR screens',
-    ]
-    
-    today_str = datetime.datetime.now().strftime('%m/%d/%Y')
 
-    # API-side date filtering (tbs) is causing persistent 400 errors.
-    # We will disable it and rely on Python filtering (save_news_item) and Debrief Generator filtering.
+    # Strip parenthetical annotations like "(Everbridge)" or "(Atrius)" — these are our
+    # internal notes, not the real company name used in news articles.
+    search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
+
+    queries = [
+        f'"{search_name}" contract OR deal OR partnership OR launch OR expansion',
+        f'"{search_name}" mall OR airport OR hospital OR university',
+        f'"{search_name}" wayfinding OR "digital signage" OR kiosk',
+        f'"{search_name}" "virtual assistant" OR "directory" OR screens',
+    ]
+
     tbs_val = None
-    # if days_back:
-    #     if days_back <= 1:
-    #         tbs_val = "qdr:d"
-    #     elif days_back <= 7:
-    #         tbs_val = "qdr:w"
-    #     elif days_back <= 31:
-    #         tbs_val = "qdr:m"
-    #     elif days_back <= 365:
-    #         tbs_val = "qdr:y"
-        # If > 365, leave None for full history
-    
+
+    def _collect(region_key, results_list):
+        for r in results_list:
+            url = r.get('link', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                if is_news_url(url):
+                    r['_search_region'] = region_key if isinstance(region_key, str) else (region_key.get('_label', 'native'))
+                    all_results.append(r)
+                else:
+                    filtered_count_ref[0] += 1
+
+    filtered_count_ref = [0]
+
+    # Standard English-language region searches (capped at 25)
     for region in regions_to_search:
         for query in queries:
             results = search_serper(query, search_type='news', region=region, num_results=10, tbs_val=tbs_val)
-            
-            for r in results:
-                url = r.get('link', '')
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    if is_news_url(url):
-                        r['_search_region'] = region
-                        all_results.append(r)
-                    else:
-                        filtered_count += 1
-            
+            _collect(region, results)
             if len(all_results) >= 25:
                 break
-        
         if len(all_results) >= 25:
             break
-    
+
+    # Native language search — always runs, results appended after English ones
+    if native_region:
+        native_label = native_region.get('_label', 'native')
+        for query in queries:
+            results = search_serper(query, search_type='news', region=native_region, num_results=10, tbs_val=tbs_val)
+            _collect(native_label, results)
+
+    filtered_count = filtered_count_ref[0]
     if filtered_count > 0:
         print(f" ({filtered_count} filtered)", end="")
-    
-    return all_results[:25]
+
+    return all_results
 
 
 def analyze_with_claude(competitor_name, articles, days_back=None):
@@ -480,26 +575,29 @@ Content: {snippet[:500]}
                 retry_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, http_client=http_client)
 
                 message = retry_client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=4000,
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=8000,
                     messages=[
                         {"role": "user", "content": prompt}
                     ]
                 )
-                
+
                 response_text = message.content[0].text.strip()
-                
+
+                # Extract JSON from code blocks
                 if "```json" in response_text:
                     response_text = response_text.split("```json")[1].split("```")[0]
                 elif "```" in response_text:
                     response_text = response_text.split("```")[1].split("```")[0]
-                
+
                 response_text = response_text.strip()
-                
+
+                # Try to find JSON object/array using regex if direct parse fails
                 result = None
                 try:
                     result = json.loads(response_text)
                 except json.JSONDecodeError:
+                    # Try appending common truncation fixes
                     for fix in ['}]}', ']}', '}']:
                         try:
                             result = json.loads(response_text + fix)
@@ -507,10 +605,21 @@ Content: {snippet[:500]}
                             break
                         except json.JSONDecodeError:
                             continue
+                    # Last resort: extract JSON block with regex
+                    if result is None:
+                        json_match = re.search(r'\{[\s\S]*\}', response_text)
+                        if json_match:
+                            try:
+                                result = json.loads(json_match.group())
+                                print(" (regex-extracted)", end="")
+                            except json.JSONDecodeError:
+                                pass
                 
                 if result is None:
+                    if attempt < max_retries - 1:
+                        continue  # Retry on JSON parse failure
                     print(f" JSON fail", end="")
-                    break # Break retry loop if JSON is bad
+                    break
                 
                 if not result.get('no_relevant_news'):
                     batch_items = result.get('news_items', [])
@@ -546,10 +655,16 @@ def fetch_news_for_competitor(competitor, regions=['global', 'mena', 'europe'], 
     """Fetch and analyze news for one competitor"""
     comp_id = competitor['id']
     name = competitor['name']
-    
-    print(f"\n  🔍 {name}", end="")
-    
-    articles = search_news(name, regions, days_back=days_back)
+    headquarters = competitor.get('headquarters') or ''
+
+    # Determine native language region based on HQ country
+    native_region = get_native_region(headquarters)
+    if native_region:
+        print(f"\n  🔍 {name} [{native_region['_label']}]", end="")
+    else:
+        print(f"\n  🔍 {name}", end="")
+
+    articles = search_news(name, regions, days_back=days_back, native_region=native_region)
     
     if not articles:
         print(f" — no articles")
@@ -640,7 +755,7 @@ def clear_all_news():
     return deleted
 
 
-def fetch_all_news(limit=None, clean_start=False, regions=['global', 'mena', 'europe'], days=None):
+def fetch_all_news(limit=None, clean_start=False, regions=['global', 'mena', 'europe'], days=None, competitor_name=None):
     """Main function"""
     print("=" * 60)
     print("🎯 ABUZZ INTELLIGENCE FETCHER (v2.0)")
@@ -664,6 +779,8 @@ def fetch_all_news(limit=None, clean_start=False, regions=['global', 'mena', 'eu
         if last_fetch:
             if isinstance(last_fetch, str):
                 last_fetch = datetime.datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
+            if last_fetch.tzinfo is None:
+                last_fetch = last_fetch.replace(tzinfo=datetime.timezone.utc)
             days_since = (datetime.datetime.now(datetime.timezone.utc) - last_fetch).days
             days_diff = max(days_since + 1, 1)
             search_days = min(days_diff, 14)
@@ -676,7 +793,15 @@ def fetch_all_news(limit=None, clean_start=False, regions=['global', 'mena', 'eu
     print(f"   {len(existing_urls)} known URLs")
 
     competitors = get_competitors()
-    print(f"📋 {len(competitors)} competitors")
+
+    if competitor_name:
+        competitors = [c for c in competitors if competitor_name.lower() in c['name'].lower()]
+        if not competitors:
+            print(f"❌ No competitor found matching '{competitor_name}'")
+            return
+        print(f"🎯 Filtered to: {competitors[0]['name']}")
+    else:
+        print(f"📋 {len(competitors)} competitors")
 
     if limit:
         competitors = competitors[:limit]
@@ -725,17 +850,18 @@ if __name__ == "__main__":
     parser.add_argument('--region', type=str)
     parser.add_argument('--mena', action='store_true')
     parser.add_argument('--days', type=int)
+    parser.add_argument('--competitor', type=str, help='Fetch news for a single competitor (partial name match)')
     args = parser.parse_args()
-    
+
     regions = ['global', 'mena', 'europe']
     if args.region:
         regions = [args.region]
     elif args.mena:
         regions = ['mena', 'global']
-    
+
     if args.test:
         fetch_all_news(limit=3, clean_start=True, regions=regions, days=args.days)
     elif args.limit:
-        fetch_all_news(limit=args.limit, clean_start=args.clean, regions=regions, days=args.days)
+        fetch_all_news(limit=args.limit, clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)
     else:
-        fetch_all_news(clean_start=args.clean, regions=regions, days=args.days)
+        fetch_all_news(clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)

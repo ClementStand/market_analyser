@@ -20,7 +20,7 @@ async function main() {
     await prisma.competitor.deleteMany({})
 
     // Read CSV
-    const csvPath = path.join(process.cwd(), 'competitors.csv')
+    const csvPath = path.join(process.cwd(), 'competitors2.csv')
     const fileContent = fs.readFileSync(csvPath, 'utf8')
 
     // Use loose typed CSV parse
@@ -36,27 +36,14 @@ async function main() {
 
     for (const r of rawRecords) {
         const name = r.Company?.trim()
-        const region = (r['Key Markets'] || '') + (r['HQ Location'] || '')
 
-        // Skip invalid rows
+        // Skip invalid rows (no company name)
         if (!name) continue
 
         // Skip Abuzz (our company)
         if (name.toLowerCase().includes('abuzz')) continue
 
-        // Filter: Keep only PRIORITY or MENA competitors
-        const PRIORITY = [
-            "Mappedin", "22Miles", "Pointr", "MapsPeople", "Broadsign",
-            "Stratacache", "Poppulo", "Korbyt", "IndoorAtlas", "Inpixon",
-            "Quuppa", "MazeMap", "Navori", "ViaDirect", "ZetaDisplay"
-        ]
-
-        const isPriority = PRIORITY.some(p => name.includes(p))
-        const isMena = region.includes('MENA') || region.includes('UAE') || region.includes('Saudi') || region.includes('Dubai')
-
-        if (isPriority || isMena) {
-            competitors.push(r)
-        }
+        competitors.push(r)
     }
 
     console.log(`🏢 Loading ${competitors.length} competitors...`)
