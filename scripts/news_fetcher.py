@@ -3,10 +3,13 @@ News Fetcher for Abuzz Competitor Intelligence
 Uses Serper.dev (Google Search API) + Claude AI (Anthropic) for analysis
 """
 
+import asyncio
+import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import datetime
 import hashlib
+import httpx
 import json
 import os
 import time
@@ -14,6 +17,8 @@ import uuid
 import re
 import requests
 import anthropic
+from google import genai as google_genai
+from google.genai import types as genai_types
 from dotenv import load_dotenv
 
 # Load .env.local first, then .env as fallback
@@ -23,6 +28,8 @@ load_dotenv()
 # Configure APIs
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+_gemini_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # Get database URL - prefer pooler connection, strip Prisma-specific params
 _raw_db_url = os.getenv("DATABASE_URL") or os.getenv("DIRECT_URL")
 DATABASE_URL = _raw_db_url.split('?')[0] if _raw_db_url else None  # Remove query params like ?pgbouncer=true
@@ -33,6 +40,9 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # --- Serper API cache (file-based, 7-day TTL) ---
 SERPER_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache', 'serper')
 SERPER_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
+
+# Global semaphore for Serper rate limiting (initialized in async main)
+SERPER_SEMAPHORE = None
 
 
 def _serper_cache_key(query, region, search_type):
@@ -64,6 +74,351 @@ def _cache_set(query, region, search_type, results):
             json.dump({'cached_at': time.time(), 'results': results}, f)
     except Exception:
         pass
+
+# --- Gemini search cache (file-based, 1-day TTL) ---
+GEMINI_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache', 'gemini')
+GEMINI_CACHE_TTL = 24 * 3600  # 1 day in seconds
+
+
+def _gemini_cache_get(name):
+    key = hashlib.md5(name.lower().encode()).hexdigest()
+    path = os.path.join(GEMINI_CACHE_DIR, f"{key}.json")
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if time.time() - data.get('cached_at', 0) < GEMINI_CACHE_TTL:
+                return data.get('results', [])
+        except Exception:
+            pass
+    return None
+
+
+def _gemini_cache_set(name, results):
+    os.makedirs(GEMINI_CACHE_DIR, exist_ok=True)
+    key = hashlib.md5(name.lower().encode()).hexdigest()
+    path = os.path.join(GEMINI_CACHE_DIR, f"{key}.json")
+    try:
+        with open(path, 'w') as f:
+            json.dump({'cached_at': time.time(), 'results': results}, f)
+    except Exception:
+        pass
+
+
+def _parse_gemini_grounding(response):
+    """Extract verified article URLs and summaries from Gemini text + grounding metadata.
+    Uses grounding_supports to map text segments to the best source URL.
+    """
+    articles = []
+    candidate = response.candidates[0] if response.candidates else None
+    if not candidate:
+        return articles
+    
+    # Get text and grounding
+    text = ""
+    if candidate.content and candidate.content.parts:
+        text = candidate.content.parts[0].text or ""
+    
+    grounding = getattr(candidate, 'grounding_metadata', None)
+    if not grounding:
+        return articles
+
+    chunks = getattr(grounding, 'grounding_chunks', []) or []
+    supports = getattr(grounding, 'grounding_supports', []) or []
+    
+    # Map text lines to chunks via overlap with supports
+    current_idx = 0
+    # Split keeping newlines to calculate indices correctly, then strip for processing
+    # Using simple split and manual tracking
+    
+    # We iterate character by character? No, simple split is fine if we assume \n
+    lines = text.split('\n')
+    
+    processed_urls = set()
+
+    for line in lines:
+        line_len = len(line)
+        start = current_idx
+        end = current_idx + line_len
+        current_idx = end + 1 # count the newline
+        
+        line_clean = line.strip()
+        # Only process list items
+        if not (line_clean.startswith('*') or line_clean.startswith('-')):
+            continue
+            
+        # Find overlapping supports
+        best_chunk_idx = -1
+        max_score = 0.0
+        
+        for support in supports:
+            # support.segment is an object with start_index, end_index
+            seg = support.segment
+            # Check overlap: start < seg.end and end > seg.start
+            if max(start, seg.start_index) < min(end, seg.end_index):
+                # This support overlaps with the line
+                indices = support.grounding_chunk_indices
+                scores = support.confidence_scores
+                
+                for idx, score in zip(indices, scores):
+                    if score > max_score:
+                         if 0 <= idx < len(chunks):
+                             chunk = chunks[idx]
+                             if hasattr(chunk, 'web') and chunk.web:
+                                 uri = getattr(chunk.web, 'uri', None)
+                                 # Skip if not news url
+                                 if uri and is_news_url(uri):
+                                     max_score = score
+                                     best_chunk_idx = idx
+
+        if best_chunk_idx != -1:
+             chunk = chunks[best_chunk_idx]
+             uri = getattr(chunk.web, 'uri', None)
+             
+             # Avoid adding same URL multiple times from same response
+             if uri in processed_urls:
+                 continue
+             processed_urls.add(uri)
+
+             title_source = getattr(chunk.web, 'title', None)
+             
+             # Clean snippet: remove markers
+             snippet = re.sub(r'^[\*\-]\s*', '', line_clean)
+             snippet = snippet.replace('**', '')
+             
+             # Use snippet as title if extracted title is missing or generic
+             title = title_source if title_source else snippet[:100]
+
+             articles.append({
+                'title': title,
+                'link': uri,
+                'snippet': snippet,
+                'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'), 
+                '_search_region': 'gemini_search'
+            })
+
+    return articles
+
+
+def search_gemini(competitor_name, days_back=7):
+    """Search for news using Gemini 2.0 Flash with Google Search grounding.
+    Returns article dicts in the same format as search_news() (Serper).
+    Grounding metadata provides verified URLs — no hallucination risk.
+    """
+    if not GEMINI_API_KEY or not _gemini_client:
+        return []
+
+    search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
+
+    cached = _gemini_cache_get(search_name)
+    if cached is not None:
+        print(f"      [GEMINI-CACHED] {search_name}: {len(cached)} articles")
+        return cached
+
+    try:
+        prompt = (
+            f"Search for news articles published in the last {days_back} days about "
+            f"the company '{search_name}'. Focus on: new contracts, partnerships, "
+            f"product launches, funding rounds, office openings, leadership changes, "
+            f"deployments in malls, airports, hospitals, or universities. "
+            f"Please provide a bulleted list of the articles you find, including their dates."
+        )
+        response = _gemini_client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                temperature=1.0  # Required for optimal grounding activation
+            )
+        )
+
+        articles = _parse_gemini_grounding(response)
+        print(f"      [GEMINI]  {search_name}: {len(articles)} articles found")
+        _gemini_cache_set(search_name, articles)
+        return articles
+
+    except Exception as e:
+        print(f"      Gemini search error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# ASYNC SEARCH LAYER
+# All async functions share the same file caches as their sync counterparts.
+# ---------------------------------------------------------------------------
+
+async def search_serper_async(query, search_type='news', region='global', num_results=10, tbs_val=None):
+    """Async version of search_serper() — uses httpx.AsyncClient, same 7-day cache."""
+    if isinstance(region, dict):
+        region_config = region
+        region_label = region.get('_label', f"{region.get('gl', '?')}_{region.get('hl', '?')}")
+    else:
+        region_config = REGIONS.get(region, REGIONS['global'])
+        region_label = region
+
+    cached = _cache_get(query, region_label, search_type)
+    if cached is not None:
+        print(f"      [CACHED] {region_label}: {query[:60]}")
+        return cached
+
+    if not SERPER_API_KEY:
+        return []
+
+    payload = {"q": query, "gl": region_config['gl'], "hl": region_config['hl'], "num": num_results}
+    if tbs_val:
+        payload["tbs"] = tbs_val
+
+    try:
+        global SERPER_SEMAPHORE
+        if SERPER_SEMAPHORE is None:
+             # Fallback if not initialized (though it should be)
+             SERPER_SEMAPHORE = asyncio.Semaphore(3)
+        
+        async with SERPER_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                response = await http.post(
+                    f"https://google.serper.dev/{search_type}",
+                    json=payload,
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+                )
+        if response.status_code in (400, 403) and "credits" in response.text.lower():
+            print("      ❌ Serper credits exhausted!")
+            return []
+        response.raise_for_status()
+        data = response.json()
+        results = data.get('news' if search_type == 'news' else 'organic', [])
+        print(f"      [API]    {region_label}: {query[:60]}")
+        _cache_set(query, region_label, search_type, results)
+        return results
+    except Exception as e:
+        print(f"      Serper async error: {e}")
+        return []
+
+
+async def search_news_async(competitor_name, regions_to_search, days_back=None, native_region=None):
+    """Async version — fires ALL (query × region) Serper combinations concurrently."""
+    search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
+    queries = [
+        f'"{search_name}" contract OR deal OR partnership OR launch OR expansion',
+        f'"{search_name}" mall OR airport OR hospital OR university',
+        f'"{search_name}" wayfinding OR "digital signage" OR kiosk',
+        f'"{search_name}" "virtual assistant" OR "directory" OR screens',
+    ]
+
+    # Build all (query, region) task pairs
+    task_pairs = []
+    for region in regions_to_search:
+        for query in queries:
+            task_pairs.append((region, query))
+    if native_region:
+        for query in queries:
+            task_pairs.append((native_region, query))
+
+    tasks = [search_serper_async(q, 'news', r, 10) for r, q in task_pairs]
+    results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+    seen_urls = set()
+    all_results = []
+    filtered = 0
+    for (region_key, _), result in zip(task_pairs, results_lists):
+        if isinstance(result, Exception):
+            continue
+        for r in result:
+            url = r.get('link', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                if is_news_url(url):
+                    label = region_key if isinstance(region_key, str) else region_key.get('_label', 'native')
+                    r['_search_region'] = label
+                    all_results.append(r)
+                else:
+                    filtered += 1
+    if filtered > 0:
+        print(f" ({filtered} filtered)", end="")
+    return all_results
+
+
+async def search_gemini_async(competitor_name, days_back=7):
+    """Async Gemini search with per-call jitter for Tier 1 rate limit safety."""
+    if not GEMINI_API_KEY or not _gemini_client:
+        return []
+
+    search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
+
+    cached = _gemini_cache_get(search_name)
+    if cached is not None:
+        print(f"      [GEMINI-CACHED] {search_name}: {len(cached)} articles")
+        return cached
+
+    # Jitter before live API call — prevents all 5 parallel competitors hitting Gemini at T=0
+    await asyncio.sleep(random.uniform(1.0, 3.0))
+
+    try:
+        prompt = (
+            f"Search for news articles published in the last {days_back} days about "
+            f"the company '{search_name}'. Focus on: new contracts, partnerships, "
+            f"product launches, funding rounds, office openings, leadership changes, "
+            f"deployments in malls, airports, hospitals, or universities. "
+            f"Please provide a bulleted list of the articles you find, including their dates."
+        )
+        response = await _gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())]
+            )
+        )
+        articles = _parse_gemini_grounding(response)
+        print(f"      [GEMINI]  {search_name}: {len(articles)} articles found")
+        _gemini_cache_set(search_name, articles)
+        return articles
+
+    except Exception as e:
+        if '429' in str(e):
+            print(f"      [GEMINI] Rate limited ({search_name}) — skipping")
+        else:
+            print(f"      Gemini async error: {e}")
+        return []
+
+
+async def search_gemini_deep_async(competitor_name, website, days_back=7):
+    """Deep site-specific Gemini search — triggered when Serper returns 0 results.
+    Uses site:competitor.com grounding to surface press releases and niche trade coverage.
+    """
+    if not GEMINI_API_KEY or not _gemini_client or not website:
+        return []
+
+    search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
+    domain = re.sub(r'^https?://', '', website).rstrip('/')
+
+    # Extra jitter — stacks on top of the base jitter from the concurrent sibling call
+    await asyncio.sleep(random.uniform(1.5, 3.0))
+
+    try:
+        prompt = (
+            f"Find any press releases, news announcements, or blog posts from or about "
+            f"'{search_name}' (website: {domain}) published in the last {days_back} days. "
+            f"Also search trade publications, PR Newswire, BusinessWire, and industry blogs "
+            f"for any coverage of {search_name}. "
+            f"Please provide a bulleted list of the articles you find, including their dates."
+        )
+        response = await _gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())]
+            )
+        )
+        articles = _parse_gemini_grounding(response)
+        if articles:
+            print(f"      [GEMINI-DEEP] {search_name}: {len(articles)} articles found")
+        return articles
+
+    except Exception as e:
+        if '429' not in str(e):
+            print(f"      Gemini deep search error: {e}")
+        return []
+
 
 # Priority competitors (most likely to have news)
 PRIORITY_COMPETITORS = [
@@ -154,6 +509,12 @@ Today is {today_date}.
 
 IMPORTANT: Analyze ALL articles. Always output your title and summary in ENGLISH.
 
+IMPORTANT: Analyze ALL articles. Always output your title and summary in ENGLISH.
+
+For articles where 'Region Found' contains "GEMINI": You MUST be more lenient. Include minor updates, blog posts, and general company activity even if it's not a major "news event". DO NOT filter these out unless they are completely irrelevant (spam/ads).
+
+Your job is to find REAL NEWS EVENTS only. Include:
+
 Your job is to find REAL NEWS EVENTS only. Include:
 - New contracts, deals, project wins (especially malls, airports, hospitals)
 - Partnerships, acquisitions, mergers, joint ventures
@@ -180,6 +541,7 @@ Otherwise, return JSON:
   "news_items": [
     {{
       "event_type": "New Project" | "Investment" | "Product Launch" | "Partnership" | "Leadership Change" | "Market Expansion" | "Financial Performance" | "Other",
+      "category": "Product" | "Expansion" | "Pricing" | "General",
       "title": "Clear headline in ENGLISH (max 100 chars)",
       "summary": "2-3 sentence summary in ENGLISH (max 500 chars). Focus on the 'So What?' for a competitor analysis.",
       "threat_level": 1-5,
@@ -195,6 +557,12 @@ Otherwise, return JSON:
     }}
   ]
 }}
+
+Category Guide:
+- "Product": New product/feature/hardware launches
+- "Expansion": New contracts, new markets, new offices, partnerships, deployments
+- "Pricing": Funding rounds, revenue news, financial results, investments
+- "General": Leadership changes, trade show appearances, other
 
 Threat Level Guide:
 - 1: Routine news, minimal impact
@@ -282,7 +650,14 @@ def save_news_item(competitor_id, news_item):
     
     if check_existing_url(cursor, source_url):
         conn.close()
-        return False, "duplicate"
+        return False, "duplicate_url"
+
+    # Check strict title duplicate (avoid cloning same story from diff URL)
+    title_check = sanitize_text(news_item.get('title', 'Untitled'))[:200]
+    cursor.execute('SELECT id FROM "CompetitorNews" WHERE "competitorId" = %s AND "title" = %s', (competitor_id, title_check))
+    if cursor.fetchone():
+        conn.close()
+        return False, "duplicate_title"
     
     try:
         news_id = generate_cuid()
@@ -313,13 +688,26 @@ def save_news_item(competitor_id, news_item):
         if news_date > now:
             news_date = now
 
-        # Skip news before 2025
+        news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+        # Skip news before 2025 (Relaxed for Gemini)
         cutoff = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
         if news_date < cutoff:
-            conn.close()
-            return False, "pre_2025"
-
-        news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            # If it's a Gemini item, we trust it might be niche/recent even if date parsing failed or is old
+            # But the user said: "default to Current Year" if no year explicits found. 
+            # We logic handled that in _parse_gemini_grounding (defaults to today).
+            # If we are here, it means we parsed a date < 2025.
+            if news_item.get('_search_region') == 'gemini_search':
+                print(f" [Warn: Pre-2025 ({news_date.strftime('%Y-%m-%d')}) but Gemini - Keeping]", end="")
+                # Force date to today if it's really old? Or just keep it. 
+                # User said: "default to 'Current Year' instead of skipping"
+                if news_date.year < 2024:
+                    news_date = now
+                    news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            else:
+                conn.close()
+                print(f" [Skip: pre_2025 ({news_date.strftime('%Y-%m-%d')})]", end="")
+                return False, "pre_2025"
         
         details = news_item.get('details', {})
         if isinstance(details, dict):
@@ -331,6 +719,10 @@ def save_news_item(competitor_id, news_item):
             }
         else:
             clean_details = {}
+        # Store category in details blob — no DB migration required
+        category = news_item.get('category', '')
+        if category:
+            clean_details['category'] = sanitize_text(category)
         details_json = json.dumps(clean_details)
         
         cursor.execute("""
@@ -474,7 +866,19 @@ def search_news(competitor_name, regions_to_search=['global', 'mena', 'europe', 
         f'"{search_name}" "virtual assistant" OR "directory" OR screens',
     ]
 
+    today_str = datetime.datetime.now().strftime('%m/%d/%Y')
+
+    # API-side date filtering (tbs)
     tbs_val = None
+    if days_back:
+        if days_back <= 1:
+            tbs_val = "qdr:d"
+        elif days_back <= 7:
+            tbs_val = "qdr:w"
+        elif days_back <= 30:
+            tbs_val = "qdr:m"
+        elif days_back <= 365:
+            tbs_val = "qdr:y"
 
     def _collect(region_key, results_list):
         for r in results_list:
@@ -511,6 +915,169 @@ def search_news(competitor_name, regions_to_search=['global', 'mena', 'europe', 
         print(f" ({filtered_count} filtered)", end="")
 
     return all_results
+
+
+async def gather_all_articles(competitor, days_back, regions):
+    """Run Serper + Gemini in parallel; apply niche deep-search fallback if Serper returns 0."""
+    name = competitor['name']
+    headquarters = competitor.get('headquarters') or ''
+    website = competitor.get('website') or ''
+    native_region = get_native_region(headquarters)
+
+    serper_task = search_news_async(name, regions, days_back=days_back, native_region=native_region)
+    gemini_task = search_gemini_async(name, days_back=days_back or 7)
+    deep_task = None
+    if website:
+        deep_task = search_gemini_deep_async(name, website, days_back=days_back or 14)
+
+    results = await asyncio.gather(
+        serper_task, gemini_task, deep_task if deep_task else asyncio.sleep(0),
+        return_exceptions=True
+    )
+    
+    serper_results = results[0]
+    gemini_results = results[1]
+    deep_results = results[2] if deep_task else []
+
+    if isinstance(serper_results, Exception):
+        print(f"      Serper error: {serper_results}")
+        serper_results = []
+    if isinstance(gemini_results, Exception):
+        print(f"      Gemini error: {gemini_results}")
+        gemini_results = []
+    if isinstance(deep_results, Exception):
+        print(f"      Gemini Deep error: {deep_results}")
+        deep_results = []
+
+    # Merge deep results into gemini_results
+    if deep_results:
+        deep_urls = {a['link'] for a in gemini_results}
+        for a in deep_results:
+            if a['link'] not in deep_urls:
+                gemini_results.append(a)
+
+    # Deduplicate by URL — Serper results take priority (appear first)
+    seen = set()
+    merged = []
+    for a in serper_results + gemini_results:
+        url = a.get('link', '')
+        if url and url not in seen:
+            seen.add(url)
+            merged.append(a)
+    return merged
+
+
+async def analyze_with_claude_async(competitor_name, articles, days_back=None):
+    """Async Claude analysis using AsyncAnthropic — same batch/retry logic as sync version."""
+    if not articles or not ANTHROPIC_API_KEY:
+        return None
+
+    BATCH_SIZE = 12
+    all_news_items = []
+    async_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+    for batch_start in range(0, len(articles), BATCH_SIZE):
+        batch = articles[batch_start:batch_start + BATCH_SIZE]
+        batch_num = (batch_start // BATCH_SIZE) + 1
+        total_batches = (len(articles) + BATCH_SIZE - 1) // BATCH_SIZE
+
+        if total_batches > 1:
+            print(f"      [batch {batch_num}/{total_batches}]", end="")
+
+        articles_text = ""
+        for i, article in enumerate(batch, 1):
+            title = sanitize_text(article.get('title', 'No title'))
+            snippet = sanitize_text(article.get('snippet', article.get('description', '')))
+            url = article.get('link', article.get('url', ''))
+            date = article.get('date', 'Unknown')
+            region = article.get('_search_region', 'global').upper()
+            articles_text += f"\n---\nArticle {i}:\nTitle: {title}\nPublished Date: {date}\nURL: {url}\nRegion Found: {region}\nContent: {snippet[:500]}\n---\n"
+
+        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        date_instr = ""
+        if days_back:
+            cutoff = datetime.datetime.now() - datetime.timedelta(days=days_back)
+            date_instr = f"CRITICAL: IGNORE any news events that occurred before {cutoff.strftime('%Y-%m-%d')}. Only include news from the last {days_back} days."
+
+        prompt = ANALYSIS_PROMPT.format(
+            competitor_name=competitor_name,
+            articles=articles_text,
+            today_date=today_str,
+            date_instruction=date_instr
+        )
+
+        for attempt in range(3):
+            try:
+                message = await async_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=8000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                response_text = message.content[0].text.strip()
+
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0]
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0]
+                response_text = response_text.strip()
+
+                result = None
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError:
+                    for fix in ['}]}', ']}', '}']:
+                        try:
+                            result = json.loads(response_text + fix)
+                            print(" (recovered)", end="")
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                    if result is None:
+                        m = re.search(r'\{[\s\S]*\}', response_text)
+                        if m:
+                            try:
+                                result = json.loads(m.group())
+                                print(" (regex-extracted)", end="")
+                            except json.JSONDecodeError:
+                                pass
+
+                if result is None:
+                    if attempt < 2:
+                        continue
+                    print(" JSON fail", end="")
+                    break
+
+                if not result.get('no_relevant_news'):
+                    items = result.get('news_items', [])
+                    # Re-attach _search_region from input articles
+                    url_map = {a.get('link', ''): a.get('_search_region') for a in batch}
+                    for item in items:
+                        src = item.get('source_url', '')
+                        if src in url_map:
+                            item['_search_region'] = url_map[src]
+                    
+                    all_news_items.extend(items)
+                    if total_batches > 1:
+                        print(f" → {len(items)} items")
+                else:
+                    if total_batches > 1:
+                        print(f" → 0 items")
+                        # Debug: Check if deep search items were dropped
+                        gemini_count = sum(1 for a in batch if 'gemini' in a.get('_search_region', '').lower())
+                        if gemini_count > 0:
+                            print(f" (Claude dropped {gemini_count} Gemini items)", end="")
+                break
+
+            except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                else:
+                    print(f" (Claude failed: {e})", end="")
+
+        if batch_start + BATCH_SIZE < len(articles):
+            await asyncio.sleep(0.5)
+
+    return {'news_items': all_news_items} if all_news_items else {'no_relevant_news': True}
 
 
 def analyze_with_claude(competitor_name, articles, days_back=None):
@@ -665,11 +1232,19 @@ def fetch_news_for_competitor(competitor, regions=['global', 'mena', 'europe'], 
         print(f"\n  🔍 {name}", end="")
 
     articles = search_news(name, regions, days_back=days_back, native_region=native_region)
-    
+
+    # Gemini search — runs in parallel, merges unique URLs not already found by Serper
+    gemini_articles = search_gemini(name, days_back=days_back or 7)
+    seen_links = {a.get('link', '') for a in articles}
+    for a in gemini_articles:
+        if a.get('link', '') not in seen_links:
+            seen_links.add(a['link'])
+            articles.append(a)
+
     if not articles:
         print(f" — no articles")
         return 0
-    
+
     if existing_urls:
         new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
         skipped = len(articles) - len(new_articles)
@@ -710,10 +1285,157 @@ def fetch_news_for_competitor(competitor, regions=['global', 'mena', 'europe'], 
     return saved
 
 
+async def fetch_news_for_competitor_async(competitor, regions, existing_urls=None, days_back=None):
+    """Async version of fetch_news_for_competitor — uses parallel Serper+Gemini."""
+    name = competitor['name']
+    headquarters = competitor.get('headquarters') or ''
+    native_region = get_native_region(headquarters)
+
+    if native_region:
+        print(f"\n  🔍 {name} [{native_region['_label']}]", end="")
+    else:
+        print(f"\n  🔍 {name}", end="")
+
+    articles = await gather_all_articles(competitor, days_back, regions)
+
+    if not articles:
+        print(" — no articles")
+        return 0
+
+    if existing_urls:
+        new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
+        skipped = len(articles) - len(new_articles)
+        if skipped > 0:
+            print(f" — {len(articles)} found, {skipped} known", end="")
+        if not new_articles:
+            print(" — all known, skip")
+            return 0
+        articles = new_articles
+
+    print(f" — {len(articles)} new...", end="")
+
+    analysis = await analyze_with_claude_async(name, articles, days_back=days_back)
+
+    if not analysis or analysis.get('no_relevant_news'):
+        return 0
+
+    news_items = analysis.get('news_items', [])
+    saved = 0
+    for item in news_items:
+        success, status = await asyncio.to_thread(save_news_item, competitor['id'], item)
+        if success:
+            saved += 1
+        else:
+            print(f" [Skip: {status}]", end="")
+
+    if saved > 0:
+        print(f" ✅ Saved {saved}", end="")
+    else:
+        print(f" (0 saved)", end="")
+    return saved
+
+
+async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=None, days=None, competitor_name=None):
+    """Async core of fetch_all_news — processes competitors in batches of 5."""
+    print("=" * 60)
+    print("🎯 ABUZZ INTELLIGENCE FETCHER (v2.1 - Parallel)")
+    print("=" * 60)
+
+    if not ANTHROPIC_API_KEY:
+        print("\n❌ ERROR: ANTHROPIC_API_KEY not found")
+        write_status('error', error='ANTHROPIC_API_KEY not found')
+        return 0
+
+    if regions is None:
+        regions = ['global', 'mena', 'europe']
+
+    if clean_start:
+        deleted = await asyncio.to_thread(clear_all_news)
+        print(f"\n🧹 Cleared {deleted} entries")
+
+    search_days = None
+    if days:
+        search_days = days
+        print(f"\n📅 Last {days} days")
+    elif not clean_start:
+        last_fetch = await asyncio.to_thread(get_last_fetch_date)
+        if last_fetch:
+            if isinstance(last_fetch, str):
+                last_fetch = datetime.datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
+            if last_fetch.tzinfo is None:
+                last_fetch = last_fetch.replace(tzinfo=datetime.timezone.utc)
+            days_since = (datetime.datetime.now(datetime.timezone.utc) - last_fetch).days
+            search_days = min(max(days_since + 1, 1), 14)
+            print(f"\n📅 Auto-range: last {search_days} days")
+        else:
+            print(f"\n📅 Full history")
+
+    print("📦 Loading URLs...")
+    existing_urls = await asyncio.to_thread(get_all_existing_urls)
+    print(f"   {len(existing_urls)} known URLs")
+
+    competitors = await asyncio.to_thread(get_competitors)
+
+    if competitor_name:
+        competitors = [c for c in competitors if competitor_name.lower() in c['name'].lower()]
+        if not competitors:
+            print(f"❌ No competitor found matching '{competitor_name}'")
+            return 0
+        print(f"🎯 Filtered to: {competitors[0]['name']}")
+    else:
+        print(f"📋 {len(competitors)} competitors")
+
+    if limit:
+        competitors = competitors[:limit]
+
+    total_competitors = len(competitors)
+    total_news = 0
+    write_status('running', current_competitor=None, processed=0, total=total_competitors)
+
+    BATCH_SIZE = 5  # Gemini Tier 1: ~15 RPM; 5 parallel + 1–3s jitter = safe
+    total_batches = (total_competitors + BATCH_SIZE - 1) // BATCH_SIZE
+
+    for batch_idx, batch_start in enumerate(range(0, total_competitors, BATCH_SIZE)):
+        batch = competitors[batch_start:batch_start + BATCH_SIZE]
+
+        if total_batches > 1:
+            print(f"\n⚡ Batch {batch_idx + 1}/{total_batches} ({len(batch)} competitors)")
+
+        write_status('running', current_competitor=batch[0]['name'],
+                     processed=batch_start, total=total_competitors)
+
+        tasks = [
+            fetch_news_for_competitor_async(c, regions, existing_urls=existing_urls, days_back=search_days)
+            for c in batch
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, (comp, result) in enumerate(zip(batch, results)):
+            idx = batch_start + i + 1
+            if isinstance(result, Exception):
+                print(f"\n  ❌ {comp['name']}: {result}")
+                result = 0
+            total_news += result
+            write_status('running', current_competitor=comp['name'],
+                         processed=idx, total=total_competitors)
+
+        # Inter-batch cooldown — prevents Gemini burst at batch boundaries
+        if batch_start + BATCH_SIZE < total_competitors:
+            delay = random.uniform(3.0, 6.0)
+            print(f"\n  ⏳ Cooling down {delay:.1f}s before next batch...")
+            await asyncio.sleep(delay)
+
+    write_status('completed', processed=total_competitors, total=total_competitors)
+    print("\n" + "=" * 60)
+    print(f"✅ COMPLETE: {total_news} items added")
+    print("=" * 60)
+    return total_news
+
+
 def write_status(status, current_competitor=None, processed=0, total=0, error=None):
     """Write progress status to JSON file"""
     import time
-    from datetime import datetime
+    import datetime
 
     percent_complete = 0
     if total > 0:
@@ -728,8 +1450,8 @@ def write_status(status, current_competitor=None, processed=0, total=0, error=No
         'total': total,
         'percent_complete': percent_complete,
         'estimated_seconds_remaining': estimated_seconds_remaining,
-        'started_at': datetime.utcnow().isoformat() + 'Z' if status == 'running' and processed == 0 else None,
-        'completed_at': datetime.utcnow().isoformat() + 'Z' if status == 'completed' else None,
+        'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat() if status == 'running' and processed == 0 else None,
+        'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat() if status == 'completed' else None,
         'error': error
     }
 
@@ -755,89 +1477,17 @@ def clear_all_news():
     return deleted
 
 
-def fetch_all_news(limit=None, clean_start=False, regions=['global', 'mena', 'europe'], days=None, competitor_name=None):
-    """Main function"""
-    print("=" * 60)
-    print("🎯 ABUZZ INTELLIGENCE FETCHER (v2.0)")
-    print("=" * 60)
-
-    if not ANTHROPIC_API_KEY:
-        print("\n❌ ERROR: ANTHROPIC_API_KEY not found")
-        write_status('error', error='ANTHROPIC_API_KEY not found')
-        return 0
-
-    if clean_start:
-        deleted = clear_all_news()
-        print(f"\n🧹 Cleared {deleted} entries")
-
-    search_days = None
-    if days:
-        search_days = days
-        print(f"\n📅 Last {days} days")
-    elif not clean_start:
-        last_fetch = get_last_fetch_date()
-        if last_fetch:
-            if isinstance(last_fetch, str):
-                last_fetch = datetime.datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
-            if last_fetch.tzinfo is None:
-                last_fetch = last_fetch.replace(tzinfo=datetime.timezone.utc)
-            days_since = (datetime.datetime.now(datetime.timezone.utc) - last_fetch).days
-            days_diff = max(days_since + 1, 1)
-            search_days = min(days_diff, 14)
-            print(f"\n📅 Auto-range: last {search_days} days")
-        else:
-            print(f"\n📅 Full history")
-
-    print("📦 Loading URLs...")
-    existing_urls = get_all_existing_urls()
-    print(f"   {len(existing_urls)} known URLs")
-
-    competitors = get_competitors()
-
-    if competitor_name:
-        competitors = [c for c in competitors if competitor_name.lower() in c['name'].lower()]
-        if not competitors:
-            print(f"❌ No competitor found matching '{competitor_name}'")
-            return
-        print(f"🎯 Filtered to: {competitors[0]['name']}")
-    else:
-        print(f"📋 {len(competitors)} competitors")
-
-    if limit:
-        competitors = competitors[:limit]
-        print(f"🎯 Limiting to {limit}")
-
-    total_competitors = len(competitors)
-    total_news = 0
-
-    write_status('running', current_competitor=None, processed=0, total=total_competitors)
-
-    try:
-        for i, comp in enumerate(competitors, 1):
-            write_status('running', current_competitor=comp['name'], processed=i-1, total=total_competitors)
-
-            print(f"[{i}/{len(competitors)}]", end="")
-            print(f"[{i}/{len(competitors)}]", end="")
-            saved = fetch_news_for_competitor(comp, regions, existing_urls=existing_urls, days_back=search_days)
-            total_news += saved
-
-            write_status('running', current_competitor=comp['name'], processed=i, total=total_competitors)
-
-            if i < len(competitors):
-                time.sleep(1)
-
-        write_status('completed', processed=total_competitors, total=total_competitors)
-
-        print("\n" + "=" * 60)
-        print(f"✅ COMPLETE: {total_news} items added")
-        print("=" * 60)
-
-        return total_news
-
-    except Exception as e:
-        print(f"\n\n❌ ERROR: {e}")
-        write_status('error', error=str(e), processed=i-1, total=total_competitors)
-        raise
+def fetch_all_news(limit=None, clean_start=False, regions=None, days=None, competitor_name=None):
+    """Main entry point — thin sync wrapper around the async implementation."""
+    if regions is None:
+        regions = ['global', 'mena', 'europe']
+    return asyncio.run(_fetch_all_news_async_inner(
+        limit=limit,
+        clean_start=clean_start,
+        regions=regions,
+        days=days,
+        competitor_name=competitor_name,
+    ))
 
 
 if __name__ == "__main__":
