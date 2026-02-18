@@ -1,11 +1,28 @@
 import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { createClient } from '@/utils/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request) {
     try {
+        // Get user's org
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+
+        if (!user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+
+        const profile = await prisma.userProfile.findUnique({
+            where: { email: user.email! }
+        })
+
+        if (!profile?.organizationId) {
+            return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+        }
+
         const { searchParams } = new URL(request.url)
 
         // Get filter params
@@ -15,7 +32,7 @@ export async function GET(request: Request) {
         const unreadOnly = searchParams.get('unread') === 'true'
         const starredOnly = searchParams.get('starred') === 'true'
 
-        // Build where clause
+        // Build where clause — scoped to user's org
         const where: Prisma.CompetitorNewsWhereInput = {
             AND: [
                 {
@@ -27,7 +44,8 @@ export async function GET(request: Request) {
                 },
                 {
                     competitor: {
-                        status: 'active'
+                        status: 'active',
+                        organizationId: profile.organizationId
                     }
                 }
             ]

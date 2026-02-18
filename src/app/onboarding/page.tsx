@@ -1,10 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Loader2, Building2, Search, Check, Globe } from "lucide-react"
+import { createClient } from '@/utils/supabase/client'
 
 type Step = 'business' | 'competitors' | 'processing'
 
@@ -12,6 +13,14 @@ interface CompetitorRecommendation {
     name: string
     website: string
     reason: string
+}
+
+interface FetchJobStatus {
+    status: string
+    currentStep: string | null
+    processed: number
+    total: number
+    error: string | null
 }
 
 export default function OnboardingPage() {
@@ -34,6 +43,11 @@ export default function OnboardingPage() {
     const [manualName, setManualName] = useState('')
     const [manualWebsite, setManualWebsite] = useState('')
 
+    // Processing status
+    const [jobStatus, setJobStatus] = useState<FetchJobStatus | null>(null)
+    const [jobId, setJobId] = useState<string | null>(null)
+    const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
     const AVAILABLE_REGIONS = [
         "Global",
         "North America",
@@ -42,6 +56,80 @@ export default function OnboardingPage() {
         "APAC",
         "South America"
     ]
+
+    // Poll for job status when in processing step
+    useEffect(() => {
+        if (step !== 'processing' || !jobId) return
+
+        const supabase = createClient()
+
+        // Subscribe to Realtime changes on FetchJob
+        const channel = supabase
+            .channel(`fetch-job-${jobId}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'FetchJob',
+                    filter: `id=eq.${jobId}`
+                },
+                (payload) => {
+                    const newData = payload.new as any
+                    setJobStatus({
+                        status: newData.status,
+                        currentStep: newData.currentStep,
+                        processed: newData.processed,
+                        total: newData.total,
+                        error: newData.error,
+                    })
+
+                    if (newData.status === 'completed') {
+                        setTimeout(() => {
+                            router.push('/')
+                            router.refresh()
+                        }, 2000)
+                    }
+                }
+            )
+            .subscribe()
+
+        // Also poll as fallback (in case Realtime isn't enabled on FetchJob table)
+        const poll = async () => {
+            try {
+                const res = await fetch(`/api/fetch-status?jobId=${jobId}`)
+                if (res.ok) {
+                    const data = await res.json()
+                    setJobStatus({
+                        status: data.status,
+                        currentStep: data.currentStep,
+                        processed: data.processed,
+                        total: data.total,
+                        error: data.error,
+                    })
+
+                    if (data.status === 'completed') {
+                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+                        setTimeout(() => {
+                            router.push('/')
+                            router.refresh()
+                        }, 2000)
+                    }
+                    if (data.status === 'error') {
+                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+                    }
+                }
+            } catch { /* ignore */ }
+        }
+
+        pollIntervalRef.current = setInterval(poll, 5000)
+        poll() // Initial poll
+
+        return () => {
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+            supabase.removeChannel(channel)
+        }
+    }, [step, jobId, router])
 
     const toggleRegion = (region: string) => {
         if (regions.includes(region)) {
@@ -61,7 +149,7 @@ export default function OnboardingPage() {
                     website,
                     industry,
                     orgName,
-                    regions, // Send array
+                    regions,
                     keywords: keywords.split(',').map(k => k.trim()).filter(Boolean),
                     existingCompetitors: isLoadMore ? [...selectedCompetitors, ...recommendations] : []
                 })
@@ -72,7 +160,6 @@ export default function OnboardingPage() {
             const data = await res.json()
 
             if (isLoadMore) {
-                // Filter out duplicates
                 const newRecs = data.recommendations.filter((rec: any) =>
                     !recommendations.some(r => r.name === rec.name) &&
                     !selectedCompetitors.some(c => c.name === rec.name)
@@ -97,13 +184,11 @@ export default function OnboardingPage() {
         }
     }
 
-    // Step 1: Submit Business Info & Get Recommendations
     const handleBusinessSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         await fetchRecommendations(false)
     }
 
-    // Step 2: Select Competitors & Finish
     const handleComplete = async () => {
         setLoading(true)
         setStep('processing')
@@ -124,7 +209,7 @@ export default function OnboardingPage() {
             })
 
             if (res.status === 401) {
-                alert("Expected session to be valid, but it seems expired. Please log in again.")
+                alert("Session expired. Please log in again.")
                 router.push('/login')
                 return
             }
@@ -135,44 +220,32 @@ export default function OnboardingPage() {
                 throw new Error(data.error || 'Failed to complete onboarding')
             }
 
-            // 2. Trigger Enrichment & Historical Scan (The "Wait" Phase)
-            // We need the competitor IDs that were just created. 
-            // The /complete API needs to return them or we just search by created org's competitors?
-            // Let's assume /complete returns { success: true, orgId: ... }
-            // We can fetch the competitors for this org or have /complete return them.
-            // Simplified: Update /complete to return the list of created competitor IDs.
-
-            // Actually, querying by orgId in the python script is easier if we pass orgId
-            // But for now let's just fetch them or rely on the script finding them by Org?
-            // The script currently accepts --competitor-ids. 
-            // Let's make /complete return the IDs.
-
-            // UPDATE: Since I can't easily modify /complete return without seeing it again (I saw it earlier, it returns orgId),
-            // I'll fetch the competitors from the frontend or just pass the OrgID to the process API and let it find them?
-            // Passing OrgID is cleaner.
-
+            // 2. Trigger Enrichment & Historical Scan
             const processRes = await fetch('/api/onboarding/process', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     orgId: data.orgId,
-                    // If we want to be specific, we'd pass IDs. 
-                    // Let's update /api/onboarding/process to accept orgId OR competitorIds.
                 })
             })
 
-            // Fallback if process fails (don't block user from dashboard)
-            if (!processRes.ok) {
-                console.error("Enrichment process warning user might see empty data initially")
+            if (processRes.ok) {
+                const processData = await processRes.json()
+                if (processData.jobId) {
+                    setJobId(processData.jobId)
+                }
+            } else {
+                // Process failed but org is created — redirect anyway
+                console.error("Enrichment process failed, redirecting anyway")
+                setTimeout(() => {
+                    router.push('/')
+                    router.refresh()
+                }, 3000)
             }
-
-            // Redirect to dashboard
-            router.push('/')
-            router.refresh()
         } catch (error: any) {
             console.error(error)
-            alert(`Error converting onboarding: ${error.message}`) // Temporary feedback
-            setStep('competitors') // Go back on error
+            alert(`Error: ${error.message}`)
+            setStep('competitors')
         } finally {
             setLoading(false)
         }
@@ -182,7 +255,7 @@ export default function OnboardingPage() {
         if (selectedCompetitors.find(c => c.name === comp.name)) {
             setSelectedCompetitors(prev => prev.filter(c => c.name !== comp.name))
         } else {
-            if (selectedCompetitors.length >= 5) return // Max 5
+            if (selectedCompetitors.length >= 5) return
             setSelectedCompetitors(prev => [...prev, comp])
         }
     }
@@ -199,26 +272,19 @@ export default function OnboardingPage() {
     const addManualCompetitor = () => {
         if (!manualName || !manualWebsite) return
 
-        // Validate URL
         if (!isValidUrl(manualWebsite) && !isValidUrl(`https://${manualWebsite}`)) {
-            alert("Please enter a valid website URL (e.g. https://example.com)") // Simple alert for now, or use state
+            alert("Please enter a valid website URL (e.g. https://example.com)")
             return
         }
 
-        // Auto-prepend https if missing
         let validUrl = manualWebsite
         if (!manualWebsite.startsWith('http')) {
             validUrl = `https://${manualWebsite}`
         }
 
         const newComp = { name: manualName, website: validUrl, reason: 'Manually added' }
-
-        // Add to recommendations list so it's visible
         setRecommendations(prev => [newComp, ...prev])
-        // Select it immediately
         toggleCompetitor(newComp)
-
-        // Clear inputs
         setManualName('')
         setManualWebsite('')
     }
@@ -244,7 +310,7 @@ export default function OnboardingPage() {
                     {step === 'business' && (
                         <div className="animate-in fade-in slide-in-from-bottom-4">
                             <h1 className="text-2xl font-bold text-white mb-2 text-center">Tell us about your business</h1>
-                            <p className="text-slate-400 text-center mb-8">We'll use this to find relevant competitors in your market.</p>
+                            <p className="text-slate-400 text-center mb-8">We&apos;ll use this to find relevant competitors in your market.</p>
 
                             <form onSubmit={handleBusinessSubmit} className="space-y-6">
                                 <div className="space-y-2">
@@ -275,7 +341,7 @@ export default function OnboardingPage() {
                                         value={industry}
                                         onChange={e => setIndustry(e.target.value)}
                                         className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-cyan-500 transition-colors"
-                                        placeholder="e.g. Digital Wayfinding, Fintech, E-commerce..."
+                                        placeholder="e.g. Fintech, E-commerce, SaaS..."
                                     />
                                 </div>
 
@@ -341,7 +407,7 @@ export default function OnboardingPage() {
                                     />
                                     <Button
                                         size="sm"
-                                        disabled={!manualName || !manualWebsite}
+                                        disabled={!manualName || !manualWebsite || selectedCompetitors.length >= 5}
                                         onClick={addManualCompetitor}
                                         className="bg-cyan-600 hover:bg-cyan-500"
                                     >
@@ -408,12 +474,53 @@ export default function OnboardingPage() {
                     {step === 'processing' && (
                         <div className="py-12 text-center animate-in fade-in zoom-in">
                             <Loader2 className="w-16 h-16 text-cyan-500 animate-spin mx-auto mb-6" />
-                            <h2 className="text-2xl font-bold text-white mb-2">Analyzing Compeititors...</h2>
-                            <p className="text-slate-400">Fetching revenue, employee data, and scanning historical news (2025-Present).</p>
-                            <p className="text-xs text-slate-500 mt-4">This may take up to a minute.</p>
+                            <h2 className="text-2xl font-bold text-white mb-2">
+                                {jobStatus?.status === 'completed' ? 'Analysis Complete!' : 'Analyzing Competitors...'}
+                            </h2>
+
+                            {jobStatus && jobStatus.status === 'running' && (
+                                <div className="mt-4 space-y-3">
+                                    {jobStatus.currentStep && (
+                                        <p className="text-cyan-400 text-sm">
+                                            Currently processing: {jobStatus.currentStep}
+                                        </p>
+                                    )}
+                                    <div className="w-full max-w-xs mx-auto bg-slate-800 rounded-full h-2">
+                                        <div
+                                            className="bg-cyan-500 h-2 rounded-full transition-all duration-500"
+                                            style={{ width: `${jobStatus.total > 0 ? (jobStatus.processed / jobStatus.total) * 100 : 0}%` }}
+                                        />
+                                    </div>
+                                    <p className="text-slate-400 text-sm">
+                                        {jobStatus.processed} / {jobStatus.total} competitors
+                                    </p>
+                                </div>
+                            )}
+
+                            {jobStatus?.status === 'completed' && (
+                                <p className="text-green-400 mt-4">Redirecting to your dashboard...</p>
+                            )}
+
+                            {jobStatus?.status === 'error' && (
+                                <div className="mt-4">
+                                    <p className="text-red-400">Something went wrong: {jobStatus.error}</p>
+                                    <Button
+                                        onClick={() => { router.push('/'); router.refresh() }}
+                                        className="mt-4 bg-cyan-600 hover:bg-cyan-500"
+                                    >
+                                        Go to Dashboard
+                                    </Button>
+                                </div>
+                            )}
+
+                            {!jobStatus && (
+                                <div className="mt-4">
+                                    <p className="text-slate-400">Fetching revenue, employee data, and scanning historical news (2025-Present).</p>
+                                    <p className="text-xs text-slate-500 mt-4">This may take a few minutes.</p>
+                                </div>
+                            )}
                         </div>
                     )}
-
 
                 </div>
             </div>

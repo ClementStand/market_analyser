@@ -2,7 +2,7 @@
 Onboarding Agent
 Runs during the onboarding "processing" screen.
 1. Enriches competitor data (Revenue, Employees, Headquarters, Key Markets)
-2. Fetches historical news from 2025-01-01 to Today
+2. Fetches historical news (Phase 1: 2025-01-01 to today, Phase 2: last 7 days for more detail)
 """
 
 import asyncio
@@ -33,6 +33,7 @@ _gemini_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY e
 def get_db_connection():
     return news_fetcher.get_db_connection()
 
+
 async def enrich_competitor_metadata(competitor):
     """
     Uses Gemini to find: Revenue, Employees, Headquarters, Key Markets
@@ -42,7 +43,7 @@ async def enrich_competitor_metadata(competitor):
         return
 
     print(f"    🔍 Enriching metadata for {competitor['name']}...")
-    
+
     try:
         search_prompt = (
             f"Research the company '{competitor['name']}' (Website: {competitor.get('website', '')}). "
@@ -59,23 +60,22 @@ async def enrich_competitor_metadata(competitor):
             contents=search_prompt,
             config=genai_types.GenerateContentConfig(
                 tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                # response_mime_type="application/json"  # REMOVED: Incompatible with Search tool
             )
         )
-        
+
         text = response.text
         # Clean JSON if needed
         import re
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
         if json_match:
             text = json_match.group(0)
-        
+
         data = json.loads(text.strip())
-        
+
         # Update DB
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             UPDATE "Competitor"
             SET revenue = %s,
@@ -91,71 +91,81 @@ async def enrich_competitor_metadata(competitor):
             data.get('key_markets') or None,
             competitor['id']
         ))
-        
+
         conn.commit()
         conn.close()
         print(f"    ✅ Enriched {competitor['name']}")
-        
+
     except Exception as e:
         print(f"    ❌ Error enriching {competitor['name']}: {e}")
 
-async def process_competitor(competitor):
+
+async def process_competitor(competitor, org=None):
     """
     1. Enrich Metadata
-    2. Fetch Historical News (2025-01-01 to Now)
+    2. Phase 1: Fetch Historical News (2025-01-01 to Now)
+    3. Phase 2: Fetch Recent News (last 7 days) for more detail
     """
     print(f"🚀 Processing {competitor['name']}...")
-    
+
+    # Get org context
+    org_company_name = (org.get('name') if org else None) or config.COMPANY_NAME
+    org_industry = (org.get('industry') if org else None) or config.INDUSTRY
+    org_keywords = (org.get('keywords') if org else None) or config.INDUSTRY_KEYWORDS
+    if isinstance(org_keywords, str):
+        org_keywords = [k.strip() for k in org_keywords.split(',') if k.strip()]
+    org_industry_context = f"developments in the {org_industry} industry" if org_industry else None
+
     # 1. Metadata Enrichment
     await enrich_competitor_metadata(competitor)
-    
-    # 2. News Fetching
-    # Calculate days back from 2025-01-01 to now
+
+    # Determine regions to search
+    regions_to_search = ['global']
+    if org and org.get('regions'):
+        org_regions = org['regions']
+        if isinstance(org_regions, str):
+            org_regions = [r.strip().lower().replace(' ', '_') for r in org_regions.split(',')]
+        region_map = {
+            'global': 'global', 'north_america': 'north_america', 'north america': 'north_america',
+            'europe': 'europe', 'mena': 'mena', 'apac': 'apac',
+        }
+        for r in org_regions:
+            mapped = region_map.get(r.lower().replace(' ', '_'))
+            if mapped and mapped not in regions_to_search:
+                regions_to_search.append(mapped)
+
+    if competitor.get('region'):
+        r_lower = competitor['region'].lower()
+        if 'north america' in r_lower and 'north_america' not in regions_to_search:
+            regions_to_search.append('north_america')
+        elif 'europe' in r_lower and 'europe' not in regions_to_search:
+            regions_to_search.append('europe')
+        elif 'mena' in r_lower and 'mena' not in regions_to_search:
+            regions_to_search.append('mena')
+        elif 'apac' in r_lower and 'apac' not in regions_to_search:
+            regions_to_search.append('apac')
+
+    # Phase 1: Historical scan (2025-01-01 to now)
     start_date = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     now = datetime.datetime.now(datetime.timezone.utc)
     days_back = (now - start_date).days + 1
-    
-    # Determine regions to search
-    # Check if competitor has a specific region, else use Organization's regions or Global
-    # For now, let's just search Global + Native to be safe and comprehensive
-    regions_to_search = ['global'] 
-    
-    if competitor.get('region'):
-        # Map DB region string to config key if possible
-        r_lower = competitor['region'].lower()
-        if 'north america' in r_lower: regions_to_search.append('north_america')
-        elif 'europe' in r_lower: regions_to_search.append('europe')
-        elif 'mena' in r_lower: regions_to_search.append('mena')
-        elif 'apac' in r_lower: regions_to_search.append('apac')
-    
-    print(f"    📰 Fetching news since {start_date.strftime('%Y-%m-%d')} ({days_back} days)...")
-    
-    articles = await news_fetcher.gather_all_articles(competitor, days_back, regions_to_search)
-    
+
+    print(f"    📰 Phase 1: Historical news since {start_date.strftime('%Y-%m-%d')} ({days_back} days)...")
+
+    articles = await news_fetcher.gather_all_articles(
+        competitor, days_back, regions_to_search,
+        industry_keywords=org_keywords, industry_context=org_industry_context
+    )
+
     print(f"    Found {len(articles)} raw articles.")
-    
-    # Save relevant articles
-    saved_count = 0
-    conn = get_db_connection()
-    for article in articles:
-        # We manually process/save here to ensure we capture them
-        # Note: news_fetcher.save_news_item does the AI threat analysis / summary IF we passed it through analysis first
-        # But gathered articles are raw. We need to standardise or just save them raw?
-        # The prompt in news_fetcher is designed to Analyze a BATCH of articles.
-        # For the onboarding, we might want to just save them raw or run a quick analysis.
-        # Let's use the existing analysis flow if possible, or just save them with basic info?
-        
-        # Realistically, for 5 competitors * many months, running Claude analysis on ALL might be too slow/expensive?
-        # Let's filter first.
-        
-        # Actually, let's stick to the high quality approach: Validate/Analyze with Claude.
-        # But we'll batch them.
-        pass
-    conn.close()
 
     # Run Analysis (Batched)
-    analyzed_data = await news_fetcher.analyze_with_claude_async(competitor['name'], articles, days_back)
-    
+    saved_count = 0
+    analyzed_data = await news_fetcher.analyze_with_claude_async(
+        competitor['name'], articles, days_back,
+        company_name=org_company_name, industry=org_industry
+    )
+
     if analyzed_data and 'news_items' in analyzed_data:
         conn = get_db_connection()
         for item in analyzed_data['news_items']:
@@ -163,14 +173,69 @@ async def process_competitor(competitor):
             if success:
                 saved_count += 1
         conn.close()
-        
-    print(f"    ✅ Saved {saved_count} analyzed news items for {competitor['name']}")
+
+    print(f"    ✅ Phase 1: Saved {saved_count} items for {competitor['name']}")
+
+    # Phase 2: Recent scan (last 7 days) for more detail
+    print(f"    📰 Phase 2: Recent news (last 7 days)...")
+    recent_articles = await news_fetcher.gather_all_articles(
+        competitor, 7, regions_to_search,
+        industry_keywords=org_keywords, industry_context=org_industry_context
+    )
+
+    # Filter out articles we already have
+    existing_urls = {a.get('link', '') for a in articles}
+    new_recent = [a for a in recent_articles if a.get('link', '') not in existing_urls]
+
+    if new_recent:
+        print(f"    Found {len(new_recent)} additional recent articles.")
+        recent_analyzed = await news_fetcher.analyze_with_claude_async(
+            competitor['name'], new_recent, 7,
+            company_name=org_company_name, industry=org_industry
+        )
+        recent_saved = 0
+        if recent_analyzed and 'news_items' in recent_analyzed:
+            conn = get_db_connection()
+            for item in recent_analyzed['news_items']:
+                success, msg = news_fetcher.save_news_item(competitor['id'], item, conn)
+                if success:
+                    recent_saved += 1
+            conn.close()
+        saved_count += recent_saved
+        print(f"    ✅ Phase 2: Saved {recent_saved} additional items")
+    else:
+        print(f"    Phase 2: No new articles beyond Phase 1")
+
+    print(f"    ✅ Total: {saved_count} news items for {competitor['name']}")
+
+
+async def run_onboarding(competitors, org_id=None, job_id=None):
+    """Run the full onboarding process for a list of competitors."""
+    # Load org context
+    org = None
+    if org_id:
+        org = news_fetcher.get_organization(org_id)
+
+    total = len(competitors)
+    print(f"Starting Onboarding Agent for {total} competitors...")
+
+    for i, comp in enumerate(competitors):
+        if job_id:
+            news_fetcher.write_status('running', current_competitor=comp.get('name'),
+                                      processed=i, total=total, job_id=job_id)
+        await process_competitor(comp, org=org)
+
+    if job_id:
+        news_fetcher.write_status('completed', processed=total, total=total, job_id=job_id)
+
+    print("Onboarding Agent Complete.")
 
 
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--competitor-ids', help='Comma separated list of competitor IDs')
     parser.add_argument('--org-id', help='Organization ID')
+    parser.add_argument('--job-id', help='FetchJob ID for status tracking')
     args = parser.parse_args()
 
     competitors = []
@@ -179,11 +244,11 @@ async def main():
 
     if args.competitor_ids:
         ids = args.competitor_ids.split(',')
-        cursor.execute(f"SELECT * FROM \"Competitor\" WHERE id = ANY(%s)", (ids,))
+        cursor.execute("SELECT * FROM \"Competitor\" WHERE id = ANY(%s)", (ids,))
         competitors = cursor.fetchall()
     elif args.org_id:
         print(f"Fetching competitors for Organization: {args.org_id}")
-        cursor.execute(f"SELECT * FROM \"Competitor\" WHERE \"organizationId\" = %s", (args.org_id,))
+        cursor.execute("SELECT * FROM \"Competitor\" WHERE \"organizationId\" = %s", (args.org_id,))
         competitors = cursor.fetchall()
     else:
         print("Error: Must provide either --competitor-ids or --org-id")
@@ -191,23 +256,12 @@ async def main():
         return
 
     conn.close()
-    
+
     if not competitors:
         print("No competitors found matching criteria.")
         return
-    
-    print(f"Starting Onboarding Agent for {len(competitors)} competitors...")
-    
-    # Process in parallel? Or sequential to avoid rate limits?
-    # Serper/Gemini have limits. Let's do parallel but with semaphores inside news_fetcher.
-    # news_fetcher.gather_all_articles handles concurrency for one competitor.
-    # processing multiple competitors in parallel might hit global limits.
-    # Let's stick to sequential for safety in this MVP phase, or chunks of 2.
-    
-    for comp in competitors:
-        await process_competitor(comp)
 
-    print("Onboarding Agent Complete.")
+    await run_onboarding(competitors, org_id=args.org_id, job_id=args.job_id)
 
 if __name__ == "__main__":
     asyncio.run(main())

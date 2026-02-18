@@ -1,5 +1,5 @@
 """
-News Fetcher for Abuzz Competitor Intelligence
+News Fetcher for Competitor Intelligence Platform
 Uses Serper.dev (Google Search API) + Claude AI (Anthropic) for analysis
 """
 
@@ -206,7 +206,7 @@ def _parse_gemini_grounding(response):
     return articles
 
 
-def search_gemini(competitor_name, days_back=7):
+def search_gemini(competitor_name, days_back=7, industry_context=None):
     """Search for news using Gemini 2.0 Flash with Google Search grounding.
     Returns article dicts in the same format as search_news() (Serper).
     Grounding metadata provides verified URLs — no hallucination risk.
@@ -221,12 +221,14 @@ def search_gemini(competitor_name, days_back=7):
         print(f"      [GEMINI-CACHED] {search_name}: {len(cached)} articles")
         return cached
 
+    focus_areas = "new contracts, partnerships, product launches, funding rounds, office openings, leadership changes, market expansion"
+    if industry_context:
+        focus_areas += f", {industry_context}"
+
     try:
         prompt = (
             f"Search for news articles published in the last {days_back} days about "
-            f"the company '{search_name}'. Focus on: new contracts, partnerships, "
-            f"product launches, funding rounds, office openings, leadership changes, "
-            f"deployments in malls, airports, hospitals, or universities. "
+            f"the company '{search_name}'. Focus on: {focus_areas}. "
             f"Please provide a bulleted list of the articles you find, including their dates."
         )
         response = _gemini_client.models.generate_content(
@@ -301,20 +303,20 @@ async def search_serper_async(query, search_type='news', region='global', num_re
         return []
 
 
-async def search_news_async(competitor_name, regions_to_search, days_back=None, native_region=None):
+async def search_news_async(competitor_name, regions_to_search, days_back=None, native_region=None, industry_keywords=None):
     """Async version — fires ALL (query × region) Serper combinations concurrently."""
     search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
     queries = []
-    
+
     # Base topics (contract, launch, financial, etc.)
     for topic in config.DEFAULT_SEARCH_TOPICS:
         queries.append(f'"{search_name}" {topic}')
 
-    # Industry-specific keywords if available
-    if config.INDUSTRY_KEYWORDS:
+    # Industry-specific keywords — prefer org-specific, fall back to global config
+    kws = industry_keywords if industry_keywords else config.INDUSTRY_KEYWORDS
+    if kws:
         # Group keywords into chunks of 3-4 to avoid massive queries
         chunk_size = 4
-        kws = config.INDUSTRY_KEYWORDS
         for i in range(0, len(kws), chunk_size):
             chunk = kws[i:i+chunk_size]
             joined = " OR ".join([f'"{k}"' for k in chunk])
@@ -353,7 +355,7 @@ async def search_news_async(competitor_name, regions_to_search, days_back=None, 
     return all_results
 
 
-async def search_gemini_async(competitor_name, days_back=7):
+async def search_gemini_async(competitor_name, days_back=7, industry_context=None):
     """Async Gemini search with per-call jitter for Tier 1 rate limit safety."""
     if not GEMINI_API_KEY or not _gemini_client:
         return []
@@ -368,12 +370,14 @@ async def search_gemini_async(competitor_name, days_back=7):
     # Jitter before live API call — prevents all 5 parallel competitors hitting Gemini at T=0
     await asyncio.sleep(random.uniform(1.0, 3.0))
 
+    focus_areas = "new contracts, partnerships, product launches, funding rounds, office openings, leadership changes, market expansion"
+    if industry_context:
+        focus_areas += f", {industry_context}"
+
     try:
         prompt = (
             f"Search for news articles published in the last {days_back} days about "
-            f"the company '{search_name}'. Focus on: new contracts, partnerships, "
-            f"product launches, funding rounds, office openings, leadership changes, "
-            f"deployments in malls, airports, hospitals, or universities. "
+            f"the company '{search_name}'. Focus on: {focus_areas}. "
             f"Please provide a bulleted list of the articles you find, including their dates."
         )
         response = await _gemini_client.aio.models.generate_content(
@@ -516,19 +520,41 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
-def get_competitors():
-    """Fetch competitors from database"""
+def get_organization(org_id):
+    """Fetch organization details from database"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
     cursor.execute("""
-        SELECT id, name, website, industry, region, headquarters
-        FROM "Competitor"
-        WHERE status = 'active' OR status IS NULL
-    """)
+        SELECT id, name, industry, keywords, regions
+        FROM "Organization"
+        WHERE id = %s
+    """, (org_id,))
+    org = cursor.fetchone()
+    conn.close()
+    return org
+
+
+def get_competitors(org_id=None):
+    """Fetch competitors from database, optionally filtered by organization"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    if org_id:
+        cursor.execute("""
+            SELECT id, name, website, industry, region, headquarters
+            FROM "Competitor"
+            WHERE (status = 'active' OR status IS NULL)
+            AND "organizationId" = %s
+        """, (org_id,))
+    else:
+        cursor.execute("""
+            SELECT id, name, website, industry, region, headquarters
+            FROM "Competitor"
+            WHERE status = 'active' OR status IS NULL
+        """)
     all_competitors = cursor.fetchall()
     conn.close()
-    
+
     return sorted(all_competitors, key=lambda c: c['name'])
 
 
@@ -657,12 +683,20 @@ def save_news_item(competitor_id, news_item, conn=None):
         return False, str(e)
 
 
-def get_last_fetch_date():
-    """Get the date of the most recent news item in the DB"""
+def get_last_fetch_date(org_id=None):
+    """Get the date of the most recent news item in the DB, optionally for an org"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT MAX("extractedAt") as last_fetch FROM "CompetitorNews"')
+        if org_id:
+            cursor.execute("""
+                SELECT MAX(cn."extractedAt") as last_fetch
+                FROM "CompetitorNews" cn
+                JOIN "Competitor" c ON cn."competitorId" = c.id
+                WHERE c."organizationId" = %s
+            """, (org_id,))
+        else:
+            cursor.execute('SELECT MAX("extractedAt") as last_fetch FROM "CompetitorNews"')
         result = cursor.fetchone()
         conn.close()
         if result and result['last_fetch']:
@@ -672,25 +706,33 @@ def get_last_fetch_date():
     return None
 
 
-def get_all_existing_urls():
-    """Fetch all existing source URLs from DB"""
+def get_all_existing_urls(org_id=None):
+    """Fetch all existing source URLs from DB, optionally for an org"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT "sourceUrl" FROM "CompetitorNews"')
+    if org_id:
+        cursor.execute("""
+            SELECT cn."sourceUrl"
+            FROM "CompetitorNews" cn
+            JOIN "Competitor" c ON cn."competitorId" = c.id
+            WHERE c."organizationId" = %s
+        """, (org_id,))
+    else:
+        cursor.execute('SELECT "sourceUrl" FROM "CompetitorNews"')
     urls = {row['sourceUrl'] for row in cursor.fetchall()}
     conn.close()
     return urls
 
 
-async def gather_all_articles(competitor, days_back, regions):
+async def gather_all_articles(competitor, days_back, regions, industry_keywords=None, industry_context=None):
     """Run Serper + Gemini in parallel; apply niche deep-search fallback if Serper returns 0."""
     name = competitor['name']
     headquarters = competitor.get('headquarters') or ''
     website = competitor.get('website') or ''
     native_region = get_native_region(headquarters)
 
-    serper_task = search_news_async(name, regions, days_back=days_back, native_region=native_region)
-    gemini_task = search_gemini_async(name, days_back=days_back or 7)
+    serper_task = search_news_async(name, regions, days_back=days_back, native_region=native_region, industry_keywords=industry_keywords)
+    gemini_task = search_gemini_async(name, days_back=days_back or 7, industry_context=industry_context)
     deep_task = None
     if website:
         deep_task = search_gemini_deep_async(name, website, days_back=days_back or 14)
@@ -732,10 +774,14 @@ async def gather_all_articles(competitor, days_back, regions):
     return merged
 
 
-async def analyze_with_claude_async(competitor_name, articles, days_back=None):
+async def analyze_with_claude_async(competitor_name, articles, days_back=None, company_name=None, industry=None):
     """Async Claude analysis using AsyncAnthropic — same batch/retry logic as sync version."""
     if not articles or not ANTHROPIC_API_KEY:
         return None
+
+    # Use org-specific values or fall back to global config
+    _company_name = company_name or config.COMPANY_NAME
+    _industry = industry or config.INDUSTRY
 
     BATCH_SIZE = 12
     all_news_items = []
@@ -765,8 +811,8 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None):
             date_instr = f"CRITICAL: IGNORE any news events that occurred before {cutoff.strftime('%Y-%m-%d')}. Only include news from the last {days_back} days."
 
         prompt = ANALYSIS_PROMPT.format(
-            company_name=config.COMPANY_NAME,
-            industry=config.INDUSTRY,
+            company_name=_company_name,
+            industry=_industry,
             competitor_name=competitor_name,
             articles=articles_text,
             today_date=today_str,
@@ -847,7 +893,8 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None):
     return {'news_items': all_news_items} if all_news_items else {'no_relevant_news': True}
 
 
-async def fetch_news_for_competitor_async(competitor, regions, existing_urls=None, days_back=None):
+async def fetch_news_for_competitor_async(competitor, regions, existing_urls=None, days_back=None,
+                                         company_name=None, industry=None, industry_keywords=None, industry_context=None):
     """Async version of fetch_news_for_competitor — uses parallel Serper+Gemini."""
     name = competitor['name']
     headquarters = competitor.get('headquarters') or ''
@@ -858,7 +905,8 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
     else:
         print(f"\n  🔍 {name}", end="")
 
-    articles = await gather_all_articles(competitor, days_back, regions)
+    articles = await gather_all_articles(competitor, days_back, regions,
+                                         industry_keywords=industry_keywords, industry_context=industry_context)
 
     if not articles:
         print(" — no articles")
@@ -876,7 +924,8 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
 
     print(f" — {len(articles)} new...", end="")
 
-    analysis = await analyze_with_claude_async(name, articles, days_back=days_back)
+    analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
+                                               company_name=company_name, industry=industry)
 
     if not analysis or analysis.get('no_relevant_news'):
         return 0
@@ -902,19 +951,66 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
     return saved
 
 
-async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=None, days=None, competitor_name=None):
+async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False, regions=None, days=None, competitor_name=None, job_id=None):
     """Async core of fetch_all_news — processes competitors in batches of 5."""
     print("=" * 60)
-    print("🎯 ABUZZ INTELLIGENCE FETCHER (v2.1 - Parallel)")
+    print("🎯 INTELLIGENCE FETCHER (v2.1 - Parallel)")
     print("=" * 60)
 
     if not ANTHROPIC_API_KEY:
         print("\n❌ ERROR: ANTHROPIC_API_KEY not found")
-        write_status('error', error='ANTHROPIC_API_KEY not found')
+        write_status('error', error='ANTHROPIC_API_KEY not found', job_id=job_id)
         return 0
 
+    # Load org context if org_id provided
+    org = None
+    org_company_name = config.COMPANY_NAME
+    org_industry = config.INDUSTRY
+    org_keywords = config.INDUSTRY_KEYWORDS
+    org_industry_context = None
+
+    if org_id:
+        org = await asyncio.to_thread(get_organization, org_id)
+        if org:
+            org_company_name = org.get('name') or config.COMPANY_NAME
+            org_industry = org.get('industry') or config.INDUSTRY
+            org_keywords = org.get('keywords') or config.INDUSTRY_KEYWORDS
+            if isinstance(org_keywords, str):
+                org_keywords = [k.strip() for k in org_keywords.split(',') if k.strip()]
+            # Build industry context string for Gemini prompts
+            if org_industry:
+                org_industry_context = f"developments in the {org_industry} industry"
+            print(f"\n🏢 Organization: {org_company_name} ({org_industry})")
+        else:
+            print(f"\n⚠️  Organization {org_id} not found, using defaults")
+
     if regions is None:
-        regions = ['global', 'mena', 'europe']
+        # Use org regions if available, else default
+        if org and org.get('regions'):
+            org_regions = org['regions']
+            if isinstance(org_regions, str):
+                org_regions = [r.strip().lower().replace(' ', '_') for r in org_regions.split(',')]
+            # Map region names to config keys
+            region_map = {
+                'global': 'global', 'north_america': 'north_america', 'north america': 'north_america',
+                'europe': 'europe', 'mena': 'mena', 'apac': 'apac',
+                'south_america': 'global',  # fallback
+            }
+            regions = []
+            for r in org_regions:
+                r_lower = r.lower().replace(' ', '_')
+                mapped = region_map.get(r_lower)
+                if mapped and mapped not in regions:
+                    regions.append(mapped)
+            if not regions:
+                regions = ['global']
+            # Always include global
+            if 'global' not in regions:
+                regions.insert(0, 'global')
+        else:
+            regions = ['global', 'mena', 'europe']
+
+    print(f"🌍 Regions: {', '.join(regions)}")
 
     if clean_start:
         deleted = await asyncio.to_thread(clear_all_news)
@@ -925,7 +1021,7 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
         search_days = days
         print(f"\n📅 Last {days} days")
     elif not clean_start:
-        last_fetch = await asyncio.to_thread(get_last_fetch_date)
+        last_fetch = await asyncio.to_thread(get_last_fetch_date, org_id)
         if last_fetch:
             if isinstance(last_fetch, str):
                 last_fetch = datetime.datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
@@ -938,10 +1034,10 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
             print(f"\n📅 Full history")
 
     print("📦 Loading URLs...")
-    existing_urls = await asyncio.to_thread(get_all_existing_urls)
+    existing_urls = await asyncio.to_thread(get_all_existing_urls, org_id)
     print(f"   {len(existing_urls)} known URLs")
 
-    competitors = await asyncio.to_thread(get_competitors)
+    competitors = await asyncio.to_thread(get_competitors, org_id)
 
     if competitor_name:
         competitors = [c for c in competitors if competitor_name.lower() in c['name'].lower()]
@@ -957,7 +1053,7 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
 
     total_competitors = len(competitors)
     total_news = 0
-    write_status('running', current_competitor=None, processed=0, total=total_competitors)
+    write_status('running', current_competitor=None, processed=0, total=total_competitors, job_id=job_id)
 
     BATCH_SIZE = 5  # Gemini Tier 1: ~15 RPM; 5 parallel + 1–3s jitter = safe
     total_batches = (total_competitors + BATCH_SIZE - 1) // BATCH_SIZE
@@ -969,10 +1065,14 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
             print(f"\n⚡ Batch {batch_idx + 1}/{total_batches} ({len(batch)} competitors)")
 
         write_status('running', current_competitor=batch[0]['name'],
-                     processed=batch_start, total=total_competitors)
+                     processed=batch_start, total=total_competitors, job_id=job_id)
 
         tasks = [
-            fetch_news_for_competitor_async(c, regions, existing_urls=existing_urls, days_back=search_days)
+            fetch_news_for_competitor_async(
+                c, regions, existing_urls=existing_urls, days_back=search_days,
+                company_name=org_company_name, industry=org_industry,
+                industry_keywords=org_keywords, industry_context=org_industry_context
+            )
             for c in batch
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -984,7 +1084,7 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
                 result = 0
             total_news += result
             write_status('running', current_competitor=comp['name'],
-                         processed=idx, total=total_competitors)
+                         processed=idx, total=total_competitors, job_id=job_id)
 
         # Inter-batch cooldown — prevents Gemini burst at batch boundaries
         if batch_start + BATCH_SIZE < total_competitors:
@@ -992,46 +1092,75 @@ async def _fetch_all_news_async_inner(limit=None, clean_start=False, regions=Non
             print(f"\n  ⏳ Cooling down {delay:.1f}s before next batch...")
             await asyncio.sleep(delay)
 
-    write_status('completed', processed=total_competitors, total=total_competitors)
+    write_status('completed', processed=total_competitors, total=total_competitors, job_id=job_id)
     print("\n" + "=" * 60)
     print(f"✅ COMPLETE: {total_news} items added")
     print("=" * 60)
     return total_news
 
 
-def write_status(status, current_competitor=None, processed=0, total=0, error=None):
-    """Write progress status to JSON file"""
-    import time
-    import datetime
+def write_status(status, current_competitor=None, processed=0, total=0, error=None, job_id=None):
+    """Write progress status to FetchJob table in DB (for Supabase Realtime).
+    Falls back to local JSON file if no job_id is provided."""
 
-    percent_complete = 0
-    if total > 0:
-        percent_complete = int((processed / total) * 100)
+    if job_id:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            cursor.execute("""
+                UPDATE "FetchJob"
+                SET status = %s,
+                    "currentStep" = %s,
+                    processed = %s,
+                    total = %s,
+                    error = %s,
+                    "updatedAt" = %s
+                WHERE id = %s
+            """, (status, current_competitor, processed, total, error, now, job_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"      [Status DB write error: {e}]")
+    else:
+        # Fallback: write to local JSON file (for local dev / CLI usage)
+        percent_complete = 0
+        if total > 0:
+            percent_complete = int((processed / total) * 100)
 
-    estimated_seconds_remaining = (total - processed) * 20
+        status_data = {
+            'status': status,
+            'current_competitor': current_competitor,
+            'processed': processed,
+            'total': total,
+            'percent_complete': percent_complete,
+            'estimated_seconds_remaining': (total - processed) * 20,
+            'error': error
+        }
 
-    status_data = {
-        'status': status,
-        'current_competitor': current_competitor,
-        'processed': processed,
-        'total': total,
-        'percent_complete': percent_complete,
-        'estimated_seconds_remaining': estimated_seconds_remaining,
-        'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat() if status == 'running' and processed == 0 else None,
-        'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat() if status == 'completed' else None,
-        'error': error
-    }
+        status_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'refresh_status.json')
+        try:
+            os.makedirs(os.path.dirname(status_path), exist_ok=True)
+            with open(status_path, 'w') as f:
+                json.dump(status_data, f, indent=2)
+                f.flush()
+        except:
+            pass
 
-    status_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'refresh_status.json')
-    try:
-        os.makedirs(os.path.dirname(status_path), exist_ok=True)
-        with open(status_path, 'w') as f:
-            json.dump(status_data, f, indent=2)
-            f.flush()
-    except:
-        pass
 
-    return status_data
+def create_fetch_job(org_id):
+    """Create a FetchJob record and return its ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    job_id = generate_cuid()
+    now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    cursor.execute("""
+        INSERT INTO "FetchJob" (id, "organizationId", status, processed, total, "createdAt", "updatedAt")
+        VALUES (%s, %s, 'pending', 0, 0, %s, %s)
+    """, (job_id, org_id, now, now))
+    conn.commit()
+    conn.close()
+    return job_id
 
 
 def clear_all_news():
@@ -1044,22 +1173,25 @@ def clear_all_news():
     return deleted
 
 
-def fetch_all_news(limit=None, clean_start=False, regions=None, days=None, competitor_name=None):
+def fetch_all_news(org_id=None, limit=None, clean_start=False, regions=None, days=None, competitor_name=None, job_id=None):
     """Main entry point — thin sync wrapper around the async implementation."""
-    if regions is None:
+    if regions is None and not org_id:
         regions = ['global', 'mena', 'europe']
     return asyncio.run(_fetch_all_news_async_inner(
+        org_id=org_id,
         limit=limit,
         clean_start=clean_start,
         regions=regions,
         days=days,
         competitor_name=competitor_name,
+        job_id=job_id,
     ))
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('--org-id', type=str, help='Organization ID (required for multi-tenant)')
     parser.add_argument('--limit', type=int)
     parser.add_argument('--skip', type=int, default=0)
     parser.add_argument('--test', action='store_true')
@@ -1070,15 +1202,15 @@ if __name__ == "__main__":
     parser.add_argument('--competitor', type=str, help='Fetch news for a single competitor (partial name match)')
     args = parser.parse_args()
 
-    regions = ['global', 'mena', 'europe']
+    regions = None  # Will be auto-detected from org
     if args.region:
         regions = [args.region]
     elif args.mena:
         regions = ['mena', 'global']
 
     if args.test:
-        fetch_all_news(limit=3, clean_start=True, regions=regions, days=args.days)
+        fetch_all_news(org_id=args.org_id, limit=3, clean_start=True, regions=regions, days=args.days)
     elif args.limit:
-        fetch_all_news(limit=args.limit, clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)
+        fetch_all_news(org_id=args.org_id, limit=args.limit, clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)
     else:
-        fetch_all_news(clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)
+        fetch_all_news(org_id=args.org_id, clean_start=args.clean, regions=regions, days=args.days, competitor_name=args.competitor)

@@ -5,6 +5,7 @@ import { Sidebar } from '../components/Sidebar'
 import NewsFeed from '../components/NewsFeed'
 import { RightSidebar } from '../components/RightSidebar'
 import SurveillanceMap from '../components/SurveillanceMap'
+import FetchStatusBanner from '../components/FetchStatusBanner'
 import { subHours, subDays } from 'date-fns'
 
 import { redirect } from 'next/navigation'
@@ -116,6 +117,7 @@ export default async function Home({
       <Sidebar orgName={org.name} />
 
       <main className="flex-1 lg:ml-64 p-4 lg:p-8">
+        <FetchStatusBanner />
         <div className="flex items-start gap-8 max-w-[1600px] mx-auto">
 
           {/* Main Feed Column */}

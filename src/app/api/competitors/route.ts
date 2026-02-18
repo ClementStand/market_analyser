@@ -64,6 +64,21 @@ export async function POST(request: Request) {
 
         const { name, website, region } = await request.json()
 
+        // Enforce 5-competitor limit
+        const activeCount = await prisma.competitor.count({
+            where: {
+                organizationId: userProfile.organizationId,
+                status: 'active'
+            }
+        })
+
+        if (activeCount >= 5) {
+            return NextResponse.json(
+                { error: 'Maximum of 5 active competitors allowed. Archive a competitor to add a new one.' },
+                { status: 400 }
+            )
+        }
+
         const competitor = await prisma.competitor.create({
             data: {
                 name,

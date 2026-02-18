@@ -11,6 +11,7 @@ model Organization {
   users       UserProfile[]
   competitors Competitor[]
   debriefs    Debrief[]
+  fetchJobs   FetchJob[]
 }
 
 model UserProfile {
@@ -25,7 +26,7 @@ model UserProfile {
 
 model Competitor {
   id          String   @id @default(cuid())
-  name        String   @unique
+  name        String
   website     String?
   description String?
   industry    String?
@@ -79,6 +80,19 @@ model Debrief {
   
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model FetchJob {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  status          String   @default("pending")  // pending, running, completed, error
+  currentStep     String?  // e.g. "Fetching news for Mappedin"
+  processed       Int      @default(0)
+  total           Int      @default(0)
+  error           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 generator client {

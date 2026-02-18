@@ -1,14 +1,34 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { createClient } from '@/utils/supabase/server'
 
 export async function POST(req: Request) {
     try {
+        // Get user's org
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+
+        if (!user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+
+        const profile = await prisma.userProfile.findUnique({
+            where: { email: user.email! }
+        })
+
+        if (!profile?.organizationId) {
+            return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+        }
+
+        const orgId = profile.organizationId
         const body = await req.json()
         const { mode, startDate, endDate } = body
 
         // Count mode: return count of news items in range
         if (mode === 'count') {
-            const where: any = {}
+            const where: any = {
+                competitor: { organizationId: orgId }
+            }
             if (startDate && endDate) {
                 where.date = {
                     gte: new Date(startDate),
@@ -27,16 +47,10 @@ export async function POST(req: Request) {
             const recentNews = await prisma.competitorNews.findMany({
                 where: {
                     date: { gte: sevenDaysAgo, lte: now },
-                    AND: [
-                        { title: { not: { contains: 'Colorado River' } } },
-                        { summary: { not: { contains: 'Colorado River' } } },
-                        { title: { not: { contains: 'Lake Mead' } } }
-                    ]
+                    competitor: { organizationId: orgId },
                 },
                 orderBy: [
                     { threatLevel: 'desc' },
-                    // Prioritize specific regions if threat level is same
-                    // { region: 'asc' }, // Can't easily do custom sort in Prisma without raw query
                     { date: 'desc' }
                 ],
                 include: { competitor: true },
@@ -56,15 +70,16 @@ export async function POST(req: Request) {
             return NextResponse.json({ topArticles, allLinks })
         }
 
-        // Latest mode: return the most recent debrief from DB
+        // Latest mode: return the most recent debrief from DB for this org
         const latest = await prisma.debrief.findFirst({
+            where: { organizationId: orgId },
             orderBy: { generatedAt: 'desc' },
         })
 
         if (!latest) {
             return NextResponse.json({
                 response: null,
-                message: 'No debrief generated yet. Run the generator script locally.',
+                message: 'No debrief generated yet.',
             })
         }
 

@@ -87,8 +87,8 @@ export function RightSidebar({ stats, topMovers = [], latestIntercepts = [] }: R
 
             {/* Disclaimer */}
             <div className="text-xs text-slate-600 text-center px-4">
-                <p>Abuzz Solutions Intel Platform v1.0</p>
-                <p className="mt-1">Confidential & Proprietary</p>
+                <p>Market Analyser v1.0</p>
+                <p className="mt-1">Competitor Intelligence Platform</p>
             </div>
         </div>
     )
