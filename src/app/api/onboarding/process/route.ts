@@ -1,4 +1,3 @@
-
 import { NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import path from 'path'
@@ -13,14 +12,12 @@ export async function POST(req: Request) {
         }
 
         if (process.env.PYTHON_WORKER_URL) {
-            // Production: Call Python Worker
+            // PRODUCTION: Call Railway Python Worker
             console.log(`Calling Python Worker at ${process.env.PYTHON_WORKER_URL}...`)
             const workerRes = await fetch(`${process.env.PYTHON_WORKER_URL}/process-onboarding`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ competitorIds, orgId }),
-                // Longer timeout for worker (or handle async return properly in future)
-                // signal: AbortSignal.timeout(60000) // Node 18+
             })
 
             if (!workerRes.ok) {
@@ -33,7 +30,7 @@ export async function POST(req: Request) {
             return NextResponse.json(workerData)
 
         } else {
-            // Development: Spawn Local Process
+            // DEVELOPMENT: Spawn Local Process
             const scriptPath = path.join(process.cwd(), 'scripts', 'onboarding_agent.py')
             const args = [scriptPath]
 
@@ -43,16 +40,16 @@ export async function POST(req: Request) {
                 args.push('--org-id', orgId)
             }
 
-            // Use venv python if available
             let pythonCmd = 'python3'
             const venvPython = path.join(process.cwd(), '.venv/bin/python')
             if (fs.existsSync(venvPython)) {
                 pythonCmd = venvPython
             }
 
-            console.log(`Starting onboarding agent using ${pythonCmd}... Args: ${args.slice(1).join(' ')}`)
+            console.log(`Starting onboarding agent using ${pythonCmd}...`)
 
-            return new Promise((resolve, reject) => {
+            // FIX: Explicitly tell TypeScript this Promise returns a NextResponse
+            return new Promise<NextResponse>((resolve) => {
                 const python = spawn(pythonCmd, args)
 
                 let output = ''
