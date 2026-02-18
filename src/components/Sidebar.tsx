@@ -138,7 +138,7 @@ export function Sidebar({ orgName }: SidebarProps) {
                 />
             )}
 
-            <div className={`w-64 bg-slate-950/50 backdrop-blur-xl border-r border-slate-800 h-screen p-4 flex flex-col fixed left-0 top-0 overflow-y-auto z-50 transition-transform duration-300 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+            <div className={`w-64 bg-slate-950/80 backdrop-blur-xl border-r border-slate-800 h-screen p-4 flex flex-col fixed left-0 top-0 overflow-y-auto z-50 transition-transform duration-300 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
 
                 <div className="mb-8 px-2 pt-2">
                     <h1 className="font-bold text-xl tracking-tight text-white">

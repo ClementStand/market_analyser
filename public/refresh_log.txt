@@ -1,19 +1,111 @@
 ============================================================
-🎯 ABUZZ COMPETITOR INTELLIGENCE FETCHER
-   Powered by Serper.dev + Claude AI
+🎯 ABUZZ INTELLIGENCE FETCHER (v2.1 - Parallel)
 ============================================================
-Traceback (most recent call last):
-  File "/Users/clementstandaert/Desktop/abuzz_newsletter_app/scripts/news_fetcher.py", line 564, in <module>
-    fetch_all_news(clean_start=args.clean, regions=regions)
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/clementstandaert/Desktop/abuzz_newsletter_app/scripts/news_fetcher.py", line 497, in fetch_all_news
-    competitors = get_competitors()
-  File "/Users/clementstandaert/Desktop/abuzz_newsletter_app/scripts/news_fetcher.py", line 129, in get_competitors
-    conn = get_db_connection()
-  File "/Users/clementstandaert/Desktop/abuzz_newsletter_app/scripts/news_fetcher.py", line 124, in get_db_connection
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/clementstandaert/Desktop/abuzz_newsletter_app/.venv/lib/python3.14/site-packages/psycopg2/__init__.py", line 122, in connect
-    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
-psycopg2.OperationalError: could not translate host name "db.ftlprayhudokuheukwcn.supabase.co" to address: nodename nor servname provided, or not known
 
+📅 Full history
+📦 Loading URLs...
+   0 known URLs
+📋 5 competitors
+
+  🔍 22Miles
+  🔍 IndoorAtlas
+  🔍 MapsPeople
+  🔍 MazeMap
+  🔍 Pointr      [GEMINI-CACHED] 22Miles: 4 articles
+      [CACHED] global: "22Miles" contract OR deal OR partnership
+      [CACHED] global: "22Miles" launch OR expansion
+      [CACHED] global: "22Miles" financial results OR funding
+      [CACHED] global: "22Miles" acquisition OR merger
+      [CACHED] global: "22Miles" "software" OR "ai" OR "startup" OR "saas"
+      [API]    mena: "22Miles" launch OR expansion
+      [API]    mena: "22Miles" financial results OR funding
+      [API]    mena: "22Miles" contract OR deal OR partnership
+      [API]    europe: "22Miles" contract OR deal OR partnership
+      [API]    mena: "22Miles" acquisition OR merger
+      [API]    mena: "22Miles" "software" OR "ai" OR "startup" OR "saas"
+      [API]    europe: "22Miles" acquisition OR merger
+      [API]    europe: "22Miles" financial results OR funding
+      [API]    europe: "22Miles" launch OR expansion
+      [API]    europe: "22Miles" "software" OR "ai" OR "startup" OR "saas"
+ (1 filtered)      [API]    global: "IndoorAtlas" launch OR expansion
+      [API]    global: "IndoorAtlas" contract OR deal OR partnership
+      [API]    global: "IndoorAtlas" financial results OR funding
+      [API]    global: "IndoorAtlas" "software" OR "ai" OR "startup" OR "saas"
+      [API]    global: "IndoorAtlas" acquisition OR merger
+      [API]    mena: "IndoorAtlas" launch OR expansion
+      [API]    mena: "IndoorAtlas" contract OR deal OR partnership
+      [API]    mena: "IndoorAtlas" financial results OR funding
+      [API]    mena: "IndoorAtlas" "software" OR "ai" OR "startup" OR "saas"
+      [API]    mena: "IndoorAtlas" acquisition OR merger
+      [GEMINI]  MazeMap: 0 articles found
+      [API]    europe: "IndoorAtlas" contract OR deal OR partnership
+      [API]    europe: "IndoorAtlas" financial results OR funding
+      [API]    europe: "IndoorAtlas" acquisition OR merger
+      [API]    europe: "IndoorAtlas" launch OR expansion
+      [API]    europe: "IndoorAtlas" "software" OR "ai" OR "startup" OR "saas"
+ (1 filtered)      [API]    global: "MapsPeople" contract OR deal OR partnership
+      [API]    global: "MapsPeople" launch OR expansion
+      [API]    global: "MapsPeople" financial results OR funding
+      [API]    global: "MapsPeople" acquisition OR merger
+      [GEMINI-DEEP] MazeMap: 4 articles found
+      [API]    mena: "MapsPeople" contract OR deal OR partnership
+      [API]    mena: "MapsPeople" launch OR expansion
+      [API]    global: "MapsPeople" "software" OR "ai" OR "startup" OR "saas"
+      [API]    mena: "MapsPeople" financial results OR funding
+      [GEMINI]  Pointr: 0 articles found
+      [API]    mena: "MapsPeople" acquisition OR merger
+      [API]    mena: "MapsPeople" "software" OR "ai" OR "startup" OR "saas"
+      [API]    europe: "MapsPeople" contract OR deal OR partnership
+      [GEMINI]  MapsPeople: 0 articles found
+      [GEMINI-DEEP] IndoorAtlas: 3 articles found
+      [API]    europe: "MapsPeople" launch OR expansion
+      [GEMINI-DEEP] Pointr: 4 articles found
+      [API]    europe: "MapsPeople" financial results OR funding
+      [API]    europe: "MapsPeople" acquisition OR merger
+      [GEMINI-DEEP] 22Miles: 6 articles found
+ — 20 new...      [batch 1/2]      [API]    europe: "MapsPeople" "software" OR "ai" OR "startup" OR "saas"
+      [API]    global: "MazeMap" contract OR deal OR partnership
+      [API]    global: "MazeMap" launch OR expansion
+      [GEMINI]  IndoorAtlas: 7 articles found
+ — 25 new...      [batch 1/3]      [API]    global: "MazeMap" "software" OR "ai" OR "startup" OR "saas"
+      [API]    global: "MazeMap" acquisition OR merger
+      [API]    global: "MazeMap" financial results OR funding
+      [API]    mena: "MazeMap" launch OR expansion
+      [API]    mena: "MazeMap" financial results OR funding
+      [API]    mena: "MazeMap" contract OR deal OR partnership
+      [API]    mena: "MazeMap" acquisition OR merger
+      [API]    mena: "MazeMap" "software" OR "ai" OR "startup" OR "saas"
+      [API]    europe: "MazeMap" contract OR deal OR partnership
+      [API]    europe: "MazeMap" launch OR expansion
+ — 11 new...      [API]    europe: "MazeMap" acquisition OR merger
+      [API]    europe: "MazeMap" financial results OR funding
+      [API]    global: "Pointr" contract OR deal OR partnership
+      [API]    global: "Pointr" launch OR expansion
+      [API]    europe: "MazeMap" "software" OR "ai" OR "startup" OR "saas"
+ — 9 new...      [API]    global: "Pointr" financial results OR funding
+      [API]    global: "Pointr" acquisition OR merger
+      [API]    mena: "Pointr" contract OR deal OR partnership
+      [API]    global: "Pointr" "software" OR "ai" OR "startup" OR "saas"
+      [API]    mena: "Pointr" launch OR expansion
+      [API]    mena: "Pointr" financial results OR funding
+      [API]    mena: "Pointr" acquisition OR merger
+      [API]    mena: "Pointr" "software" OR "ai" OR "startup" OR "saas"
+      [API]    europe: "Pointr" contract OR deal OR partnership
+      [API]    europe: "Pointr" financial results OR funding
+      [API]    europe: "Pointr" launch OR expansion
+      [API]    europe: "Pointr" acquisition OR merger
+      [API]    europe: "Pointr" "software" OR "ai" OR "startup" OR "saas"
+ — 18 new...      [batch 1/2]
+  ❌ 22Miles: 'company_name'
+
+  ❌ IndoorAtlas: 'company_name'
+
+  ❌ MapsPeople: 'company_name'
+
+  ❌ MazeMap: 'company_name'
+
+  ❌ Pointr: 'company_name'
+
+============================================================
+✅ COMPLETE: 0 items added
+============================================================

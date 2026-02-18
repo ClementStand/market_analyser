@@ -481,15 +481,10 @@ def is_news_url(url):
     return True
 
 
-# Use dynamic prompt from config
-ANALYSIS_PROMPT = config.ANALYSIS_PROMPT_TEMPLATE.format(
-    company_name=config.COMPANY_NAME,
-    industry=config.INDUSTRY,
-    competitor_name="{competitor_name}",
-    articles="{articles}",
-    today_date="{today_date}",
-    date_instruction="{date_instruction}"
-)
+# Use config for regions
+# Fix: Escape braces for .format()
+ANALYSIS_PROMPT = config.ANALYSIS_PROMPT_TEMPLATE
+
 
 
 def sanitize_text(text):
@@ -770,6 +765,8 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None):
             date_instr = f"CRITICAL: IGNORE any news events that occurred before {cutoff.strftime('%Y-%m-%d')}. Only include news from the last {days_back} days."
 
         prompt = ANALYSIS_PROMPT.format(
+            company_name=config.COMPANY_NAME,
+            industry=config.INDUSTRY,
             competitor_name=competitor_name,
             articles=articles_text,
             today_date=today_str,

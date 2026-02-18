@@ -59,17 +59,17 @@ async def enrich_competitor_metadata(competitor):
             contents=search_prompt,
             config=genai_types.GenerateContentConfig(
                 tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                response_mime_type="application/json"
+                # response_mime_type="application/json"  # REMOVED: Incompatible with Search tool
             )
         )
         
         text = response.text
         # Clean JSON if needed
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
-            
+        import re
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            text = json_match.group(0)
+        
         data = json.loads(text.strip())
         
         # Update DB

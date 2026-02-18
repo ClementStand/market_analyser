@@ -32,7 +32,10 @@ export async function updateSession(request: NextRequest) {
     );
 
     // refreshing the auth token
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error) {
+        console.log(`[Middleware] getUser error: ${error.message} (${error.status})`)
+    }
 
     // Protect routes
     if (!user && !request.nextUrl.pathname.startsWith('/login') && !request.nextUrl.pathname.startsWith('/signup') && !request.nextUrl.pathname.startsWith('/auth')) {
