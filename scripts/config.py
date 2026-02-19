@@ -14,12 +14,15 @@ INDUSTRY_KEYWORDS = [k.strip() for k in os.getenv("NEXT_PUBLIC_INDUSTRY_KEYWORDS
 
 # Search Configuration
 # If no specific keywords are provided, these defaults will be used in news_fetcher.py
-# but they are much more generic now.
+# Default keywords for Serper searches (combined with Company Name)
 DEFAULT_SEARCH_TOPICS = [
-    "contract OR deal OR partnership",
+    "contract OR deal",
     "launch OR expansion",
     "financial results OR funding",
-    "acquisition OR merger"
+    "acquisition OR merger",
+    "partnership OR partner",
+    "CEO OR appoints OR executive",
+    "press release"
 ]
 
 # Region Configuration (Mirrors src/lib/config.ts)

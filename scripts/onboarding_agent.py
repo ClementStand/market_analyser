@@ -121,13 +121,19 @@ async def enrich_competitor_metadata(competitor):
         print(f"    ❌ Error enriching {competitor['name']}: {e}")
 
 
-async def process_competitor(competitor, org=None):
+async def process_competitor(competitor, org=None, job_id=None, processed=0, total=0):
     """
     1. Enrich Metadata
     2. Phase 1: Fetch Historical News (2025-01-01 to Now)
     3. Phase 2: Fetch Recent News (last 7 days) for more detail
     """
     print(f"🚀 Processing {competitor['name']}...")
+    
+    # helper for status updates
+    def update_phase(phase_name):
+        if job_id:
+            news_fetcher.write_status('running', current_competitor=f"{competitor['name']} ({phase_name})",
+                                    processed=processed, total=total, job_id=job_id)
 
     # Get org context
     org_company_name = (org.get('name') if org else None) or config.COMPANY_NAME
@@ -137,6 +143,8 @@ async def process_competitor(competitor, org=None):
         org_keywords = [k.strip() for k in org_keywords.split(',') if k.strip()]
     org_industry_context = f"developments in the {org_industry} industry" if org_industry else None
 
+    update_phase("Enriching Data")
+    
     # 1. Metadata Enrichment
     await enrich_competitor_metadata(competitor)
 
@@ -172,7 +180,9 @@ async def process_competitor(competitor, org=None):
     days_back = (now - start_date).days + 1
 
     print(f"    📰 Phase 1: Historical news since {start_date.strftime('%Y-%m-%d')} ({days_back} days)...")
-
+    
+    update_phase(f"Searching {days_back}d History")
+    
     articles = await news_fetcher.gather_all_articles(
         competitor, days_back, regions_to_search,
         industry_keywords=org_keywords, industry_context=org_industry_context
@@ -181,6 +191,8 @@ async def process_competitor(competitor, org=None):
     print(f"    Found {len(articles)} raw articles.")
 
     # Run Analysis (Batched)
+    update_phase(f"Analyzing {len(articles)} Items")
+
     saved_count = 0
     analyzed_data = await news_fetcher.analyze_with_claude_async(
         competitor['name'], articles, days_back,
@@ -199,6 +211,9 @@ async def process_competitor(competitor, org=None):
 
     # Phase 2: Recent scan (last 7 days) for more detail
     print(f"    📰 Phase 2: Recent news (last 7 days)...")
+    
+    update_phase("Deep Search Recent")
+    
     recent_articles = await news_fetcher.gather_all_articles(
         competitor, 7, regions_to_search,
         industry_keywords=org_keywords, industry_context=org_industry_context
@@ -210,6 +225,9 @@ async def process_competitor(competitor, org=None):
 
     if new_recent:
         print(f"    Found {len(new_recent)} additional recent articles.")
+        
+        update_phase(f"Analyzing {len(new_recent)} Recent Items")
+        
         recent_analyzed = await news_fetcher.analyze_with_claude_async(
             competitor['name'], new_recent, 7,
             company_name=org_company_name, industry=org_industry
@@ -244,7 +262,7 @@ async def run_onboarding(competitors, org_id=None, job_id=None):
         if job_id:
             news_fetcher.write_status('running', current_competitor=comp.get('name'),
                                       processed=i, total=total, job_id=job_id)
-        await process_competitor(comp, org=org)
+        await process_competitor(comp, org=org, job_id=job_id, processed=i, total=total)
 
     if job_id:
         news_fetcher.write_status('completed', processed=total, total=total, job_id=job_id)

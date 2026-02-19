@@ -381,9 +381,17 @@ async def search_gemini_async(competitor_name, days_back=7, industry_context=Non
 
     try:
         prompt = (
-            f"Search for all recent news articles, press releases, and announcements from the last {days_back} days about "
-            f"the company '{search_name}'. Focus on: {focus_areas}. "
-            f"Also check trade publications, industry blogs, PR Newswire, and the company's own website for announcements. "
+            f"Your goal is to find specific, high-value business news about '{search_name}' from the last {days_back} days.\n"
+            f"Use the Google Search tool with multiple specific queries. Do NOT just search for generic terms.\n"
+            f"SUGGESTED QUERIES (execute these):\n"
+            f"- '{search_name} press release'\n"
+            f"- '{search_name} CEO'\n"
+            f"- '{search_name} contract'\n"
+            f"- '{search_name} partnership'\n"
+            f"- '{search_name} new product'\n"
+            f"- '{search_name} blog'\n"
+            f"IMPORTANT: Do NOT add 'last {days_back} days' to the search query string itself, as it confuses the search engine. Just check the dates of the results.\n"
+            f"Focus on: {focus_areas}.\n"
             f"Return a bulleted list (use - for each item) of every article found, with its date and a brief description."
         )
         response = await _gemini_client.aio.models.generate_content(
@@ -394,6 +402,13 @@ async def search_gemini_async(competitor_name, days_back=7, industry_context=Non
             )
         )
         articles = _parse_gemini_grounding(response)
+        if not articles:
+            print(f"      [GEMINI-DEBUG] No articles extracted. Raw Text:\n{response.text}")
+            try:
+                print(f"      [GEMINI-DEBUG] Grounding Metadata: {response.candidates[0].grounding_metadata}")
+            except:
+                pass
+        
         print(f"      [GEMINI]  {search_name}: {len(articles)} articles found")
         _gemini_cache_set(search_name, articles)
         return articles
