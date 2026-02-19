@@ -519,6 +519,12 @@ export default function OnboardingPage() {
                                     <p className="text-xs text-slate-500 mt-4">This may take a few minutes.</p>
                                 </div>
                             )}
+
+                            {jobStatus?.status !== 'completed' && jobStatus?.status !== 'error' && (
+                                <p className="text-xs text-slate-500 mt-4">
+                                    You'll receive an email when the analysis is complete. Feel free to close this page.
+                                </p>
+                            )}
                         </div>
                     )}
 

@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
 export async function updateSession(request: NextRequest) {
     let response = NextResponse.next({
@@ -49,6 +50,22 @@ export async function updateSession(request: NextRequest) {
         const url = request.nextUrl.clone()
         url.pathname = '/login'
         return NextResponse.redirect(url)
+    }
+
+    // If user is logged in but hasn't completed onboarding, redirect to /onboarding
+    if (user && !request.nextUrl.pathname.startsWith('/onboarding') && !request.nextUrl.pathname.startsWith('/auth') && !request.nextUrl.pathname.startsWith('/api/')) {
+        try {
+            const profile = await prisma.userProfile.findUnique({
+                where: { email: user.email! }
+            })
+            if (!profile?.organizationId) {
+                const url = request.nextUrl.clone()
+                url.pathname = '/onboarding'
+                return NextResponse.redirect(url)
+            }
+        } catch (e) {
+            // If DB check fails, let the request through — the page itself will handle it
+        }
     }
 
     return response;

@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Loader2, Mail } from 'lucide-react'
 
 export default function FetchStatusBanner() {
     const [status, setStatus] = useState<{
@@ -9,16 +9,33 @@ export default function FetchStatusBanner() {
         currentStep: string | null
         processed: number
         total: number
+        jobId?: string
     } | null>(null)
+    const emailSentRef = useRef<Set<string>>(new Set())
 
     useEffect(() => {
+        let prevStatus = ''
+
         const poll = async () => {
             try {
                 const res = await fetch('/api/fetch-status')
                 if (res.ok) {
                     const data = await res.json()
                     if (data.status === 'running' || data.status === 'pending') {
+                        prevStatus = data.status
                         setStatus(data)
+                    } else if (data.status === 'completed' && prevStatus === 'running' && data.jobId) {
+                        // Job just completed — send email notification
+                        if (!emailSentRef.current.has(data.jobId)) {
+                            emailSentRef.current.add(data.jobId)
+                            fetch('/api/send-completion-email', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ jobId: data.jobId }),
+                            }).catch(() => { /* ignore */ })
+                        }
+                        setStatus(null)
+                        prevStatus = ''
                     } else {
                         setStatus(null)
                     }
@@ -54,6 +71,10 @@ export default function FetchStatusBanner() {
                         <span className="text-xs text-slate-400">{status.processed}/{status.total}</span>
                     </div>
                 )}
+                <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                    <Mail className="w-3 h-3" />
+                    You'll receive an email when the analysis is complete.
+                </p>
             </div>
         </div>
     )

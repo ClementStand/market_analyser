@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { ArrowLeft, Globe, Brain, UserCheck, Activity, Calendar, MapPin, Users, DollarSign, TrendingUp } from "lucide-react"
 import { format } from 'date-fns'
 import NewsCard from "@/components/ui/NewsCard"
+import SearchNewsButton from "@/components/SearchNewsButton"
 import { prisma } from '@/lib/prisma'
 
 async function getCompetitor(id: string) {
@@ -93,14 +94,17 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                             )}
                         </div>
 
-                        {competitor.website && (
-                            <a href={competitor.website} target="_blank" rel="noreferrer">
-                                <Button className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 gap-2 shadow-lg shadow-black/20">
-                                    <Globe className="h-4 w-4 text-cyan-400" />
-                                    Visit Website
-                                </Button>
-                            </a>
-                        )}
+                        <div className="flex gap-3">
+                            <SearchNewsButton competitorName={competitor.name} />
+                            {competitor.website && (
+                                <a href={competitor.website} target="_blank" rel="noreferrer">
+                                    <Button className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 gap-2 shadow-lg shadow-black/20">
+                                        <Globe className="h-4 w-4 text-cyan-400" />
+                                        Visit Website
+                                    </Button>
+                                </a>
+                            )}
+                        </div>
                     </div>
                 </div>
 

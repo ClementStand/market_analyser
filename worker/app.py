@@ -39,6 +39,9 @@ class RefreshNewsRequest(BaseModel):
     days: Optional[int] = None
     competitorName: Optional[str] = None
 
+class EnrichCompetitorRequest(BaseModel):
+    competitorId: str
+
 async def run_onboarding_logic(competitor_ids: Optional[List[str]], org_id: Optional[str], job_id: Optional[str] = None):
     try:
         logger.info(f"Worker starting onboarding for orgId={org_id} competitors={competitor_ids}")
@@ -92,6 +95,32 @@ async def run_refresh_logic(org_id: str, job_id: Optional[str] = None, days: Opt
                 news_fetcher.write_status('error', error=str(e), job_id=job_id)
             except:
                 pass
+
+async def run_enrich_logic(competitor_id: str):
+    try:
+        logger.info(f"Worker starting enrichment for competitor={competitor_id}")
+        conn = onboarding_agent.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM "Competitor" WHERE id = %s', (competitor_id,))
+        competitor = cursor.fetchone()
+        conn.close()
+
+        if not competitor:
+            logger.warning(f"Competitor {competitor_id} not found")
+            return
+
+        await onboarding_agent.enrich_competitor_metadata(competitor)
+        logger.info(f"Worker enrichment completed for {competitor.get('name', competitor_id)}")
+
+    except Exception as e:
+        logger.error(f"Worker enrichment failed for {competitor_id}: {e}")
+
+@app.post("/enrich-competitor", status_code=202)
+async def enrich_competitor(request: EnrichCompetitorRequest, background_tasks: BackgroundTasks):
+    if not request.competitorId:
+        raise HTTPException(status_code=400, detail="Must provide competitorId")
+    background_tasks.add_task(run_enrich_logic, request.competitorId)
+    return {"message": "Enrichment started in background"}
 
 @app.post("/process-onboarding", status_code=202)
 async def process_onboarding(request: OnboardingRequest, background_tasks: BackgroundTasks):

@@ -88,6 +88,16 @@ export async function POST(request: Request) {
                 organizationId: userProfile.organizationId
             }
         })
+
+        // Fire-and-forget: enrich competitor metadata via Railway worker
+        if (process.env.PYTHON_WORKER_URL) {
+            fetch(`${process.env.PYTHON_WORKER_URL}/enrich-competitor`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ competitorId: competitor.id }),
+            }).catch(err => console.error('Enrichment call failed:', err))
+        }
+
         return NextResponse.json(competitor)
     } catch (error) {
         console.error(error)
