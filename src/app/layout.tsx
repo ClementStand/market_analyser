@@ -6,11 +6,9 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: process.env.NEXT_PUBLIC_APP_NAME || "Market Analyser",
-  description: process.env.NEXT_PUBLIC_APP_DESCRIPTION || "Competitor Intelligence Platform",
-  icons: {
-    icon: "/logo.png",
-  },
+  title: process.env.NEXT_PUBLIC_APP_NAME || "Scoper",
+  description: process.env.NEXT_PUBLIC_APP_DESCRIPTION || "AI-Powered Competitive Intelligence Platform",
+
 };
 
 export default function RootLayout({

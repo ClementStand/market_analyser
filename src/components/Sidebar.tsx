@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { RefreshButton } from "@/components/ui/RefreshButton"
 import { CompetitorLogo } from "@/components/ui/CompetitorLogo"
-import { Loader2, LayoutDashboard, FileText, Settings, Menu, X } from "lucide-react"
+import { Loader2, LayoutDashboard, FileText, Settings, Menu, X, LogOut, User } from "lucide-react"
+import { createClient } from '@/utils/supabase/client'
 import { matchesRegion, APP_CONFIG } from "@/lib/config"
 
 interface SidebarProps {
@@ -104,6 +105,25 @@ export function Sidebar({ orgName }: SidebarProps) {
         // But since we have the check inside applyFilters, it should be safe
         applyFilters()
     }, [selectedCompetitor, selectedRegion, minThreat, unreadOnly, starredOnly])
+
+    // User profile
+    const [userEmail, setUserEmail] = useState<string | null>(null)
+
+    useEffect(() => {
+        const fetchUser = async () => {
+            const supabase = createClient()
+            const { data: { user } } = await supabase.auth.getUser()
+            setUserEmail(user?.email ?? null)
+        }
+        fetchUser()
+    }, [])
+
+    const handleLogout = async () => {
+        const supabase = createClient()
+        await supabase.auth.signOut()
+        router.push('/')
+        router.refresh()
+    }
 
     // Local search state
     const [searchTerm, setSearchTerm] = useState('')
@@ -239,7 +259,26 @@ export function Sidebar({ orgName }: SidebarProps) {
                     </div>
                 </div>
 
-                <div className="mt-auto pt-6 border-t border-slate-800">
+                <div className="mt-auto pt-4 border-t border-slate-800 space-y-3">
+                    {userEmail && (
+                        <div className="flex items-center justify-between px-2 py-2 rounded-lg">
+                            <div className="flex items-center gap-2 overflow-hidden">
+                                <div className="w-7 h-7 rounded-full bg-cyan-950 border border-cyan-900 flex items-center justify-center flex-shrink-0">
+                                    <User className="w-3.5 h-3.5 text-cyan-400" />
+                                </div>
+                                <span className="text-xs text-slate-400 truncate" title={userEmail}>
+                                    {userEmail}
+                                </span>
+                            </div>
+                            <button
+                                onClick={handleLogout}
+                                title="Sign out"
+                                className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-950/30 rounded-md transition-colors flex-shrink-0"
+                            >
+                                <LogOut className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
+                    )}
                     <RefreshButton />
                 </div>
             </div>

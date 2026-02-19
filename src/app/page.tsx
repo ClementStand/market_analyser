@@ -6,6 +6,7 @@ import NewsFeed from '../components/NewsFeed'
 import { RightSidebar } from '../components/RightSidebar'
 import SurveillanceMap from '../components/SurveillanceMap'
 import FetchStatusBanner from '../components/FetchStatusBanner'
+import LandingPage from '../components/landing/LandingPage'
 import { subHours, subDays } from 'date-fns'
 
 import { redirect } from 'next/navigation'
@@ -19,8 +20,9 @@ export default async function Home({
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
+  // Unauthenticated users see the landing page
   if (!user) {
-    redirect('/login')
+    return <LandingPage />
   }
 
   // Get User Profile & Org
@@ -69,14 +71,12 @@ export default async function Home({
   }
 
   if (searchParams.location) {
-    // Case-insensitive fuzzy search within the JSON string
     where.details = {
       contains: searchParams.location,
       mode: 'insensitive'
     }
   }
 
-  // 3. Fetch Data (paginated — max 200 items for performance)
   const news = await prisma.competitorNews.findMany({
     where,
     orderBy: { date: 'desc' },
@@ -84,7 +84,6 @@ export default async function Home({
     take: 200,
   })
 
-  // Calculate Stats
   const now = new Date()
   const last24h = subHours(now, 24)
 
@@ -95,7 +94,6 @@ export default async function Home({
     last24h: news.filter((n) => new Date(n.date) > last24h).length
   }
 
-  // Calculate Top Movers (Last 7 Days)
   const last7Days = subDays(now, 7)
 
   const recentNews = news.filter((n) => new Date(n.date) >= last7Days)
@@ -106,7 +104,6 @@ export default async function Home({
     competitorCounts[name] = (competitorCounts[name] || 0) + 1
   })
 
-  // Sort and take top 5
   const topMovers = Object.entries(competitorCounts)
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count)
@@ -139,11 +136,9 @@ export default async function Home({
 
             </div>
 
-            {/* ✅ Passing the server-fetched news to the component */}
             <NewsFeed initialNews={news} />
           </div>
 
-          {/* Right Sidebar Column */}
           <RightSidebar stats={stats} topMovers={topMovers} latestIntercepts={news.slice(0, 3)} />
 
         </div>
