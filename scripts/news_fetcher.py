@@ -149,8 +149,13 @@ def _parse_gemini_grounding(response):
         current_idx = end + 1 # count the newline
         
         line_clean = line.strip()
-        # Only process list items
-        if not (line_clean.startswith('*') or line_clean.startswith('-')):
+        # Process list items: bullets (*, -) and numbered items (1., 2., etc.)
+        is_list_item = (
+            line_clean.startswith('*') or
+            line_clean.startswith('-') or
+            bool(re.match(r'^\d+[\.\)]\s', line_clean))
+        )
+        if not is_list_item:
             continue
             
         # Find overlapping supports
@@ -172,8 +177,7 @@ def _parse_gemini_grounding(response):
                              chunk = chunks[idx]
                              if hasattr(chunk, 'web') and chunk.web:
                                  uri = getattr(chunk.web, 'uri', None)
-                                 # Skip if not news url
-                                 if uri and is_news_url(uri):
+                                 if uri:
                                      max_score = score
                                      best_chunk_idx = idx
 
@@ -188,8 +192,9 @@ def _parse_gemini_grounding(response):
 
              title_source = getattr(chunk.web, 'title', None)
              
-             # Clean snippet: remove markers
+             # Clean snippet: remove bullets, numbered markers, and bold formatting
              snippet = re.sub(r'^[\*\-]\s*', '', line_clean)
+             snippet = re.sub(r'^\d+[\.\)]\s*', '', snippet)
              snippet = snippet.replace('**', '')
              
              # Use snippet as title if extracted title is missing or generic
@@ -376,9 +381,10 @@ async def search_gemini_async(competitor_name, days_back=7, industry_context=Non
 
     try:
         prompt = (
-            f"Search for news articles published in the last {days_back} days about "
+            f"Search for all recent news articles, press releases, and announcements from the last {days_back} days about "
             f"the company '{search_name}'. Focus on: {focus_areas}. "
-            f"Please provide a bulleted list of the articles you find, including their dates."
+            f"Also check trade publications, industry blogs, PR Newswire, and the company's own website for announcements. "
+            f"Return a bulleted list (use - for each item) of every article found, with its date and a brief description."
         )
         response = await _gemini_client.aio.models.generate_content(
             model='gemini-2.0-flash',

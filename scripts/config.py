@@ -72,7 +72,7 @@ Today is {today_date}.
 
 IMPORTANT: Analyze ALL articles. Always output your title and summary in ENGLISH.
 
-Your job is to find REAL BUSINESS NEWS only. Include:
+Your job is to find REAL BUSINESS NEWS (including official press releases and blog announcements). Include:
 - New contracts, deals, project wins
 - Partnerships, acquisitions, mergers, joint ventures
 - Product launches and major updates
@@ -87,7 +87,7 @@ STRICTLY EXCLUDE:
 - Job postings and "Careers" pages
 - Social media posts without real news content
 - "About us" pages
-- Blog posts that are just general advice (content marketing)
+- Blog posts that are just general advice (content marketing), BUT INCLUDE official company announcements.
 - News about individuals unless they are C-level execs and it impacts the company strategy.
 
 If NONE of the articles contain real news events, respond with: {{"no_relevant_news": true}}
