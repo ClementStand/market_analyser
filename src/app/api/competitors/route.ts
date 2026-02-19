@@ -107,7 +107,45 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
     try {
+        const supabase = createClient()
+        const { data: { user }, error } = await supabase.auth.getUser()
+
+        if (error || !user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+
+        const userProfile = await prisma.userProfile.findUnique({
+            where: { email: user.email! }
+        })
+
+        if (!userProfile) {
+            return NextResponse.json({ error: 'User profile not found' }, { status: 404 })
+        }
+
         const { id, status } = await request.json()
+
+        // Verify competitor belongs to user's org
+        const existing = await prisma.competitor.findUnique({ where: { id } })
+        if (!existing || existing.organizationId !== userProfile.organizationId) {
+            return NextResponse.json({ error: 'Competitor not found' }, { status: 404 })
+        }
+
+        // If reactivating, enforce 5-competitor limit
+        if (status === 'active' && existing.status !== 'active') {
+            const activeCount = await prisma.competitor.count({
+                where: {
+                    organizationId: userProfile.organizationId,
+                    status: 'active'
+                }
+            })
+            if (activeCount >= 5) {
+                return NextResponse.json(
+                    { error: 'Maximum of 5 active competitors allowed. Archive a competitor first.' },
+                    { status: 400 }
+                )
+            }
+        }
+
         const competitor = await prisma.competitor.update({
             where: { id },
             data: { status }

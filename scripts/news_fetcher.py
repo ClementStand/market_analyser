@@ -564,9 +564,9 @@ def check_existing_url(cursor, url):
     return cursor.fetchone() is not None
 
 
-def save_news_item(competitor_id, news_item, conn=None):
+def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
     """Save news item to database. Accepts an optional shared connection to avoid
-    opening a new connection per item."""
+    opening a new connection per item. max_age_days rejects articles older than N days."""
     owns_conn = conn is None
     if owns_conn:
         conn = get_db_connection()
@@ -621,6 +621,15 @@ def save_news_item(competitor_id, news_item, conn=None):
             news_date = now
 
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+        # Skip articles older than max_age_days (e.g. 14 days for "Search News 2 weeks")
+        if max_age_days:
+            min_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=max_age_days)
+            if news_date < min_date:
+                if owns_conn:
+                    conn.close()
+                print(f" [Skip: too_old ({news_date.strftime('%Y-%m-%d')}, max {max_age_days}d)]", end="")
+                return False, "too_old"
 
         # Skip news before configured cutoff
         cutoff = config.DEFAULT_DATE_CUTOFF
@@ -936,7 +945,7 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
     conn = await asyncio.to_thread(get_db_connection)
     try:
         for item in news_items:
-            success, status = await asyncio.to_thread(save_news_item, competitor['id'], item, conn)
+            success, status = await asyncio.to_thread(save_news_item, competitor['id'], item, conn, days_back)
             if success:
                 saved += 1
             else:

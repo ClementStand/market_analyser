@@ -72,6 +72,27 @@ async def enrich_competitor_metadata(competitor):
 
         data = json.loads(text.strip())
 
+        # Normalize values to clean strings before storing
+        revenue = data.get('revenue')
+        if isinstance(revenue, list):
+            revenue = ', '.join(str(r) for r in revenue)
+        revenue = str(revenue).strip() if revenue else None
+
+        employees = data.get('employees')
+        if isinstance(employees, list):
+            employees = ', '.join(str(e) for e in employees)
+        employees = str(employees).strip() if employees else None
+
+        headquarters = data.get('headquarters')
+        if isinstance(headquarters, list):
+            headquarters = ', '.join(str(h) for h in headquarters)
+        headquarters = str(headquarters).strip() if headquarters else None
+
+        key_markets = data.get('key_markets')
+        if isinstance(key_markets, list):
+            key_markets = ', '.join(str(m) for m in key_markets)
+        key_markets = str(key_markets).strip() if key_markets else None
+
         # Update DB
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -85,10 +106,10 @@ async def enrich_competitor_metadata(competitor):
                 "updatedAt" = NOW()
             WHERE id = %s
         """, (
-            data.get('revenue') or None,
-            data.get('employees') or None,
-            data.get('headquarters') or None,
-            data.get('key_markets') or None,
+            revenue,
+            employees,
+            headquarters,
+            key_markets,
             competitor['id']
         ))
 

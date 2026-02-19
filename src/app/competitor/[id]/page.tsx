@@ -7,6 +7,14 @@ import NewsCard from "@/components/ui/NewsCard"
 import SearchNewsButton from "@/components/SearchNewsButton"
 import { prisma } from '@/lib/prisma'
 
+function formatField(raw: string): string {
+    // Handle PostgreSQL array format: {"item1","item2"} or {item1,item2}
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+        return raw.slice(1, -1).replace(/"/g, '').split(',').map(s => s.trim()).join(', ')
+    }
+    return raw
+}
+
 async function getCompetitor(id: string) {
     return await prisma.competitor.findUnique({
         where: { id },
@@ -124,7 +132,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                             <MapPin className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
                                             <div>
                                                 <div className="text-[10px] text-slate-500 uppercase tracking-wider">Headquarters</div>
-                                                <div className="text-sm text-slate-200 font-medium">{competitor.headquarters}</div>
+                                                <div className="text-sm text-slate-200 font-medium">{formatField(competitor.headquarters)}</div>
                                             </div>
                                         </div>
                                     )}
@@ -133,7 +141,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                             <Users className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
                                             <div>
                                                 <div className="text-[10px] text-slate-500 uppercase tracking-wider">Employees</div>
-                                                <div className="text-sm text-slate-200 font-medium">{competitor.employeeCount}</div>
+                                                <div className="text-sm text-slate-200 font-medium">{formatField(competitor.employeeCount)}</div>
                                             </div>
                                         </div>
                                     )}
@@ -142,7 +150,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                             <DollarSign className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
                                             <div>
                                                 <div className="text-[10px] text-slate-500 uppercase tracking-wider">Est. Revenue</div>
-                                                <div className="text-sm text-slate-200 font-medium">{competitor.revenue}</div>
+                                                <div className="text-sm text-slate-200 font-medium">{formatField(competitor.revenue)}</div>
                                             </div>
                                         </div>
                                     )}
@@ -151,7 +159,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                             <Globe className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
                                             <div>
                                                 <div className="text-[10px] text-slate-500 uppercase tracking-wider">Key Markets</div>
-                                                <div className="text-sm text-slate-200 font-medium">{competitor.keyMarkets}</div>
+                                                <div className="text-sm text-slate-200 font-medium">{formatField(competitor.keyMarkets)}</div>
                                             </div>
                                         </div>
                                     )}
@@ -160,7 +168,7 @@ export default async function CompetitorPage({ params }: { params: { id: string 
                                             <TrendingUp className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
                                             <div>
                                                 <div className="text-[10px] text-slate-500 uppercase tracking-wider">Funding / Status</div>
-                                                <div className="text-sm text-slate-200 font-medium">{competitor.fundingStatus}</div>
+                                                <div className="text-sm text-slate-200 font-medium">{formatField(competitor.fundingStatus)}</div>
                                             </div>
                                         </div>
                                     )}
