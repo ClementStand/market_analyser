@@ -203,14 +203,23 @@ def _parse_gemini_grounding(response):
              # Use snippet as title if extracted title is missing or generic
              title = title_source if title_source else snippet[:100]
 
-             # Try to extract date from the line text (e.g. "Nov 18, 2013" or "February 2025")
+             # Try to extract date from the line text. First look for explicit YYYY-MM-DD (e.g. from prompt instructions)
              extracted_date = None
-             try:
-                 extracted_date = dateutil_parser.parse(line_clean, fuzzy=True)
-                 if extracted_date.tzinfo is None:
+             explicit_date_match = re.search(r'\(?(\d{4}-\d{2}-\d{2})\)?', line_clean)
+             if explicit_date_match:
+                 try:
+                     extracted_date = datetime.datetime.strptime(explicit_date_match.group(1), "%Y-%m-%d")
                      extracted_date = extracted_date.replace(tzinfo=datetime.timezone.utc)
-             except (ValueError, OverflowError):
-                 pass
+                 except:
+                     pass
+             
+             if not extracted_date:
+                 try:
+                     extracted_date = dateutil_parser.parse(line_clean, fuzzy=True)
+                     if extracted_date.tzinfo is None:
+                         extracted_date = extracted_date.replace(tzinfo=datetime.timezone.utc)
+                 except (ValueError, OverflowError):
+                     pass
 
              date_str = extracted_date.strftime('%Y-%m-%d') if extracted_date else None
 
@@ -223,6 +232,33 @@ def _parse_gemini_grounding(response):
             })
 
     return articles
+
+async def resolve_gemini_url(url, client):
+    """Resolve vertexaisearch grounding URLs to their actual destination."""
+    if not url or 'vertexaisearch.cloud.google.com' not in url:
+        return url
+    try:
+        # Don't follow redirects, just grab the Location header
+        resp = await client.head(url, follow_redirects=False, timeout=5.0)
+        if resp.status_code in (301, 302, 303, 307, 308):
+            return resp.headers.get('location', url)
+    except Exception:
+        pass
+    return url
+
+async def _resolve_all_gemini_urls(articles):
+    if not articles:
+        return articles
+    async with httpx.AsyncClient() as client:
+        tasks = []
+        for a in articles:
+            tasks.append(resolve_gemini_url(a.get('link', ''), client))
+        resolved_urls = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, res in enumerate(resolved_urls):
+            if isinstance(res, str) and res:
+                articles[i]['link'] = res
+    return articles
+
 
 
 def search_gemini(competitor_name, days_back=7, industry_context=None):
@@ -415,7 +451,7 @@ async def search_gemini_async(competitor_name, days_back=7, industry_context=Non
             f"- '{search_name} blog'\n"
             f"IMPORTANT: Do NOT add 'last {days_back} days' to the search query string itself, as it confuses the search engine. Just check the dates of the results.\n"
             f"Focus on: {focus_areas}.\n"
-            f"Return a bulleted list (use - for each item) of every article found, with its date and a brief description."
+            f"Return a bulleted list (use - for each item) of every article found. IMPORTANT: For each article, include the Exact Publication Date formatted as (YYYY-MM-DD) and a brief description."
         )
         response = await _gemini_client.aio.models.generate_content(
             model='gemini-2.0-flash',
@@ -425,6 +461,8 @@ async def search_gemini_async(competitor_name, days_back=7, industry_context=Non
             )
         )
         articles = _parse_gemini_grounding(response)
+        articles = await _resolve_all_gemini_urls(articles)
+        
         if not articles:
             print(f"      [GEMINI-DEBUG] No articles extracted. Raw Text:\n{response.text}")
             try:
@@ -463,7 +501,7 @@ async def search_gemini_deep_async(competitor_name, website, days_back=7):
             f"'{search_name}' (website: {domain}) published in the last {days_back} days. "
             f"Also search trade publications, PR Newswire, BusinessWire, and industry blogs "
             f"for any coverage of {search_name}. "
-            f"Please provide a bulleted list of the articles you find, including their dates."
+            f"Please provide a bulleted list of the articles you find. IMPORTANT: For each article, include the Exact Publication Date formatted as (YYYY-MM-DD)."
         )
         response = await _gemini_client.aio.models.generate_content(
             model='gemini-2.0-flash',
@@ -473,6 +511,7 @@ async def search_gemini_deep_async(competitor_name, website, days_back=7):
             )
         )
         articles = _parse_gemini_grounding(response)
+        articles = await _resolve_all_gemini_urls(articles)
         if articles:
             print(f"      [GEMINI-DEEP] {search_name}: {len(articles)} articles found")
         return articles
@@ -848,14 +887,22 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
             if news_date:
                 print(f" [date:meta]", end="")
 
-        # Step 3: If still no date, default to midpoint of the search window
+        # Step 3: If still no date, default to today if no max_age, or drop if strict timeframe
+        parsed_midpoint = False
         if news_date is None:
-            if max_age_days:
+            if max_age_days and max_age_days <= 30 and not is_fallback:
+                if owns_conn:
+                    conn.close()
+                print(f" [Skip: no_date (strict {max_age_days}d limit)]", end="")
+                return False, "no_date_strict"
+            elif max_age_days:
                 midpoint_days = max_age_days // 2
                 news_date = now - datetime.timedelta(days=midpoint_days)
+                parsed_midpoint = True
                 print(f" [date:midpoint_{midpoint_days}d]", end="")
             else:
                 news_date = now
+                parsed_midpoint = True
                 print(f" [date:now]", end="")
 
         # Cap future dates to today
@@ -865,7 +912,7 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
         # --- STALENESS FILTER (uses caller's max_age_days only) ---
-        if max_age_days and not is_fallback:
+        if max_age_days and not is_fallback and not parsed_midpoint:
             min_date = now - datetime.timedelta(days=max_age_days)
             if news_date < min_date:
                 if owns_conn:
@@ -942,6 +989,28 @@ def get_last_fetch_date(org_id=None):
     except:
         pass
     return None
+
+def get_competitor_last_fetch_dates(org_id=None):
+    """Get the date of the most recent news item per competitor."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if org_id:
+            cursor.execute("""
+                SELECT c.id, MAX(cn."extractedAt") as last_fetch
+                FROM "Competitor" c
+                LEFT JOIN "CompetitorNews" cn ON cn."competitorId" = c.id
+                WHERE c."organizationId" = %s
+                GROUP BY c.id
+            """, (org_id,))
+        else:
+            cursor.execute('SELECT "competitorId" as id, MAX("extractedAt") as last_fetch FROM "CompetitorNews" GROUP BY "competitorId"')
+        result = {row['id']: row['last_fetch'] for row in cursor.fetchall()}
+        conn.close()
+        return result
+    except:
+        pass
+    return {}
 
 
 def get_all_existing_urls(org_id=None):
@@ -1439,29 +1508,16 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
         deleted = await asyncio.to_thread(clear_all_news)
         print(f"\n🧹 Cleared {deleted} entries")
 
-    search_days = None
-    is_initial_scan = clean_start
-
+    global_search_days = None
     if days:
-        search_days = days
+        global_search_days = days
         print(f"\n📅 Last {days} days")
-    elif not clean_start:
-        last_fetch = await asyncio.to_thread(get_last_fetch_date, org_id)
-        if last_fetch:
-            if isinstance(last_fetch, str):
-                last_fetch = datetime.datetime.fromisoformat(last_fetch.replace('Z', '+00:00'))
-            if last_fetch.tzinfo is None:
-                last_fetch = last_fetch.replace(tzinfo=datetime.timezone.utc)
-            days_since = (datetime.datetime.now(datetime.timezone.utc) - last_fetch).days
-            search_days = min(max(days_since + 1, 1), 14)
-            print(f"\n📅 Auto-range: last {search_days} days")
-        else:
-            is_initial_scan = True
-            print(f"\n📅 Full history (Initial Scan)")
 
-    print("📦 Loading URLs...")
+    print("📦 Loading URLs & Competitor Stats...")
     existing_urls = await asyncio.to_thread(get_all_existing_urls, org_id)
     print(f"   {len(existing_urls)} known URLs")
+    
+    competitor_last_fetch_map = await asyncio.to_thread(get_competitor_last_fetch_dates, org_id)
 
     competitors = await asyncio.to_thread(get_competitors, org_id)
 
@@ -1493,16 +1549,34 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
         write_status('running', current_competitor=batch[0]['name'],
                      processed=batch_start, total=total_competitors, job_id=job_id)
 
-        tasks = [
-            fetch_news_for_competitor_async(
-                c, regions, existing_urls=existing_urls, days_back=search_days,
-                company_name=org_company_name, industry=org_industry,
-                industry_keywords=org_keywords, industry_context=org_industry_context,
-                vip_competitors=org_vip_competitors, priority_regions=org_priority_regions,
-                is_initial_scan=is_initial_scan
+        tasks = []
+        for c in batch:
+            c_days = global_search_days
+            c_is_initial = clean_start
+
+            if not days and not clean_start:
+                c_last_fetch = competitor_last_fetch_map.get(c['id'])
+                if c_last_fetch:
+                    if isinstance(c_last_fetch, str):
+                        c_last_fetch = datetime.datetime.fromisoformat(c_last_fetch.replace('Z', '+00:00'))
+                    if c_last_fetch.tzinfo is None:
+                        c_last_fetch = c_last_fetch.replace(tzinfo=datetime.timezone.utc)
+                    days_since = (datetime.datetime.now(datetime.timezone.utc) - c_last_fetch).days
+                    c_days = min(max(days_since + 1, 1), 14)
+                else:
+                    c_is_initial = True
+                    c_days = None
+
+            tasks.append(
+                fetch_news_for_competitor_async(
+                    c, regions, existing_urls=existing_urls, days_back=c_days,
+                    company_name=org_company_name, industry=org_industry,
+                    industry_keywords=org_keywords, industry_context=org_industry_context,
+                    vip_competitors=org_vip_competitors, priority_regions=org_priority_regions,
+                    is_initial_scan=c_is_initial
+                )
             )
-            for c in batch
-        ]
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for i, (comp, result) in enumerate(zip(batch, results)):

@@ -3,6 +3,7 @@
 import Navbar from './Navbar'
 import Hero from './Hero'
 import { ProductShowcase } from './ProductShowcase'
+import PoweredBy from './PoweredBy'
 import ProofSection from './ProofSection'
 import FeaturesGrid from './FeaturesGrid'
 import FounderProfile from './FounderProfile'
@@ -13,6 +14,7 @@ export default function LandingPage() {
         <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased">
             <Navbar />
             <Hero />
+            <PoweredBy />
             <ProductShowcase />
             <FeaturesGrid />
             <ProofSection />
