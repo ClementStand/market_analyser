@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { RefreshButton } from "@/components/ui/RefreshButton"
 import { CompetitorLogo } from "@/components/ui/CompetitorLogo"
-import { Loader2, LayoutDashboard, FileText, Settings, Menu, X, LogOut, User } from "lucide-react"
+import { Loader2, LayoutDashboard, FileText, Settings, Menu, X, LogOut, User, Users } from "lucide-react"
 import { createClient } from '@/utils/supabase/client'
 import { matchesRegion, APP_CONFIG } from "@/lib/config"
 
@@ -205,9 +205,14 @@ export function Sidebar({ orgName }: SidebarProps) {
                             Weekly Debrief
                         </Link>
                         <Link href="/competitors" className="flex items-center gap-3 px-3 py-2 text-sm text-slate-400 hover:text-cyan-400 hover:bg-slate-900/50 rounded-lg transition-colors group">
-                            <Settings className="w-4 h-4 text-slate-500 group-hover:text-cyan-400" />
+                            <Users className="w-4 h-4 text-slate-500 group-hover:text-cyan-400" />
                             Manage Competitors
-                        </Link>    {/* Search Input */}
+                        </Link>
+                        <Link href="/settings" className="flex items-center gap-3 px-3 py-2 text-sm text-slate-400 hover:text-cyan-400 hover:bg-slate-900/50 rounded-lg transition-colors group">
+                            <Settings className="w-4 h-4 text-slate-500 group-hover:text-cyan-400" />
+                            Settings
+                        </Link>
+                        {/* Search Input */}
                         <input
                             type="text"
                             placeholder="Filter competitors..."

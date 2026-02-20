@@ -308,7 +308,7 @@ async def search_serper_async(query, search_type='news', region='global', num_re
         return []
 
 
-async def search_news_async(competitor_name, regions_to_search, days_back=None, native_region=None, industry_keywords=None):
+async def search_news_async(competitor_name, regions_to_search, days_back=None, native_region=None, industry_keywords=None, website=None):
     """Async version — fires ALL (query × region) Serper combinations concurrently."""
     search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
     queries = []
@@ -326,6 +326,12 @@ async def search_news_async(competitor_name, regions_to_search, days_back=None, 
             chunk = kws[i:i+chunk_size]
             joined = " OR ".join([f'"{k}"' for k in chunk])
             queries.append(f'"{search_name}" {joined}')
+
+    # Domain-scoped queries to reduce homonym noise
+    if website:
+        domain = re.sub(r'^https?://', '', website).rstrip('/')
+        for topic in config.DEFAULT_SEARCH_TOPICS:
+            queries.append(f'"{search_name}" {topic} site:{domain}')
 
     # Build all (query, region) task pairs
     task_pairs = []
@@ -506,6 +512,41 @@ def is_news_url(url):
     return True
 
 
+async def validate_urls_async(articles, timeout=5.0, max_concurrent=10):
+    """HEAD-request each article URL. Discard 404/500 and root-only paths (fail-open on timeout)."""
+    from urllib.parse import urlparse
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Root-only paths that indicate a generic page, not a specific article
+    GENERIC_PATHS = {'', '/', '/blog', '/blog/', '/news', '/news/', '/press', '/press/',
+                     '/media', '/media/', '/insights', '/insights/', '/resources', '/resources/'}
+
+    async def check_one(article):
+        url = article.get('link', '')
+        if not url:
+            return None
+
+        parsed = urlparse(url)
+        path = parsed.path.rstrip('/')
+        if path in GENERIC_PATHS or path == '':
+            return None
+
+        try:
+            async with semaphore:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    resp = await client.head(url)
+                    if resp.status_code >= 400:
+                        return None
+        except (httpx.TimeoutException, httpx.ConnectError, Exception):
+            # Fail-open: keep the article if we can't reach the server
+            pass
+        return article
+
+    tasks = [check_one(a) for a in articles]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return [r for r in results if r is not None and not isinstance(r, Exception)]
+
+
 # Use config for regions
 # Fix: Escape braces for .format()
 ANALYSIS_PROMPT = config.ANALYSIS_PROMPT_TEMPLATE
@@ -546,7 +587,8 @@ def get_organization(org_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, name, industry, keywords, regions
+        SELECT id, name, industry, keywords, regions,
+               "vipCompetitors", "priorityRegions"
         FROM "Organization"
         WHERE id = %s
     """, (org_id,))
@@ -631,6 +673,14 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
             threat_level = 2
         threat_level = max(1, min(5, threat_level))
 
+        impact_score = news_item.get('impact_score')
+        try:
+            impact_score = int(impact_score) if impact_score is not None else None
+        except:
+            impact_score = None
+        if impact_score is not None:
+            impact_score = max(0, min(100, impact_score))
+
         date_str = news_item.get('date', now.strftime('%Y-%m-%d'))
         try:
             news_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=datetime.timezone.utc)
@@ -684,8 +734,8 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
         cursor.execute("""
             INSERT INTO "CompetitorNews" (
                 id, "competitorId", "eventType", date, title, summary,
-                "threatLevel", details, "sourceUrl", "isRead", "isStarred", "extractedAt", region
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                "threatLevel", "impactScore", details, "sourceUrl", "isRead", "isStarred", "extractedAt", region
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             news_id,
             competitor_id,
@@ -694,6 +744,7 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
             title,
             summary,
             threat_level,
+            impact_score,
             details_json,
             source_url,
             False,
@@ -754,6 +805,24 @@ def get_all_existing_urls(org_id=None):
     return urls
 
 
+def get_recent_titles(competitor_id, days=5):
+    """Fetch titles of recent news items for a competitor (for dedup context)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days))
+    cutoff_str = cutoff.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    cursor.execute("""
+        SELECT title, "eventType", date
+        FROM "CompetitorNews"
+        WHERE "competitorId" = %s AND date >= %s
+        ORDER BY date DESC
+        LIMIT 30
+    """, (competitor_id, cutoff_str))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
 async def gather_all_articles(competitor, days_back, regions, industry_keywords=None, industry_context=None):
     """Run Serper + Gemini in parallel; apply niche deep-search fallback if Serper returns 0."""
     name = competitor['name']
@@ -761,7 +830,7 @@ async def gather_all_articles(competitor, days_back, regions, industry_keywords=
     website = competitor.get('website') or ''
     native_region = get_native_region(headquarters)
 
-    serper_task = search_news_async(name, regions, days_back=days_back, native_region=native_region, industry_keywords=industry_keywords)
+    serper_task = search_news_async(name, regions, days_back=days_back, native_region=native_region, industry_keywords=industry_keywords, website=website)
     gemini_task = search_gemini_async(name, days_back=days_back or 7, industry_context=industry_context)
     deep_task = None
     if website:
@@ -801,10 +870,19 @@ async def gather_all_articles(competitor, days_back, regions, industry_keywords=
         if url and url not in seen:
             seen.add(url)
             merged.append(a)
+
+    # Validate URLs (async HEAD requests) — discard 404s and generic pages
+    pre_validation_count = len(merged)
+    merged = await validate_urls_async(merged)
+    validated_out = pre_validation_count - len(merged)
+    if validated_out > 0:
+        print(f" ({validated_out} failed URL validation)", end="")
+
     return merged
 
 
-async def analyze_with_claude_async(competitor_name, articles, days_back=None, company_name=None, industry=None):
+async def analyze_with_claude_async(competitor_name, articles, days_back=None, company_name=None, industry=None,
+                                     recent_titles=None, vip_competitors=None, priority_regions=None):
     """Async Claude analysis using AsyncAnthropic — same batch/retry logic as sync version."""
     if not articles or not ANTHROPIC_API_KEY:
         return None
@@ -840,13 +918,43 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None, c
             cutoff = datetime.datetime.now() - datetime.timedelta(days=days_back)
             date_instr = f"CRITICAL: IGNORE any news events that occurred before {cutoff.strftime('%Y-%m-%d')}. Only include news from the last {days_back} days."
 
+        # Build dedup context from recent titles
+        dedup_context = ""
+        if recent_titles:
+            titles_list = "\n".join(
+                f"- [{r['eventType']}] {r['title']} ({r['date']})"
+                for r in recent_titles[:20]
+            )
+            dedup_context = (
+                f"DEDUPLICATION CONTEXT:\n"
+                f"The following articles are ALREADY in our database for {competitor_name}. "
+                f"If any of the new search results describe the SAME underlying business event "
+                f"(even if from a different source or with a slightly different headline), "
+                f"DO NOT include them in your output. Only include genuinely NEW events.\n"
+                f"Existing articles:\n{titles_list}"
+            )
+
+        # Build dynamic VIP/priority scoring instructions
+        vip_instruction = ""
+        if vip_competitors and competitor_name in vip_competitors:
+            vip_instruction = f"- This competitor ({competitor_name}) is a VIP/high-priority competitor: +20 points to ALL their news items"
+        elif vip_competitors:
+            vip_instruction = f"- VIP Competitors (add +20 if the news involves any of these): {', '.join(vip_competitors)}"
+
+        priority_instruction = ""
+        if priority_regions:
+            priority_instruction = f"- Priority Regions (add +20 if the news is in or affects any of these): {', '.join(priority_regions)}"
+
         prompt = ANALYSIS_PROMPT.format(
             company_name=_company_name,
             industry=_industry,
             competitor_name=competitor_name,
             articles=articles_text,
             today_date=today_str,
-            date_instruction=date_instr
+            date_instruction=date_instr,
+            dedup_context=dedup_context,
+            vip_competitor_instruction=vip_instruction,
+            priority_region_instruction=priority_instruction
         )
 
         for attempt in range(3):
@@ -924,7 +1032,8 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None, c
 
 
 async def fetch_news_for_competitor_async(competitor, regions, existing_urls=None, days_back=None,
-                                         company_name=None, industry=None, industry_keywords=None, industry_context=None):
+                                         company_name=None, industry=None, industry_keywords=None, industry_context=None,
+                                         vip_competitors=None, priority_regions=None):
     """Async version of fetch_news_for_competitor — uses parallel Serper+Gemini."""
     name = competitor['name']
     headquarters = competitor.get('headquarters') or ''
@@ -954,8 +1063,14 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
 
     print(f" — {len(articles)} new...", end="")
 
+    # Fetch recent titles for dedup context
+    recent_titles = await asyncio.to_thread(get_recent_titles, competitor['id'], days=5)
+
     analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
-                                               company_name=company_name, industry=industry)
+                                               company_name=company_name, industry=industry,
+                                               recent_titles=recent_titles,
+                                               vip_competitors=vip_competitors,
+                                               priority_regions=priority_regions)
 
     if not analysis or analysis.get('no_relevant_news'):
         return 0
@@ -1011,6 +1126,17 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
             if org_industry:
                 org_industry_context = f"developments in the {org_industry} industry"
             print(f"\n🏢 Organization: {org_company_name} ({org_industry})")
+
+    # Extract VIP/priority config for impact scoring
+    org_vip_competitors = []
+    org_priority_regions = []
+    if org:
+        org_vip_competitors = org.get('vipCompetitors') or []
+        org_priority_regions = org.get('priorityRegions') or []
+        if isinstance(org_vip_competitors, str):
+            org_vip_competitors = [v.strip() for v in org_vip_competitors.split(',') if v.strip()]
+        if isinstance(org_priority_regions, str):
+            org_priority_regions = [r.strip() for r in org_priority_regions.split(',') if r.strip()]
         else:
             print(f"\n⚠️  Organization {org_id} not found, using defaults")
 
@@ -1101,7 +1227,8 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
             fetch_news_for_competitor_async(
                 c, regions, existing_urls=existing_urls, days_back=search_days,
                 company_name=org_company_name, industry=org_industry,
-                industry_keywords=org_keywords, industry_context=org_industry_context
+                industry_keywords=org_keywords, industry_context=org_industry_context,
+                vip_competitors=org_vip_competitors, priority_regions=org_priority_regions
             )
             for c in batch
         ]

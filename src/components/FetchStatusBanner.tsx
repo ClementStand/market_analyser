@@ -24,7 +24,7 @@ export default function FetchStatusBanner() {
                     if (data.status === 'running' || data.status === 'pending') {
                         prevStatus = data.status
                         setStatus(data)
-                    } else if (data.status === 'completed' && prevStatus === 'running' && data.jobId) {
+                    } else if (data.status === 'completed' && data.jobId) {
                         // Job just completed — send email notification
                         if (!emailSentRef.current.has(data.jobId)) {
                             emailSentRef.current.add(data.jobId)

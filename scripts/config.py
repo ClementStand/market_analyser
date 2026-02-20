@@ -73,6 +73,8 @@ CONTEXT:
 Today is {today_date}.
 {date_instruction}
 
+{dedup_context}
+
 IMPORTANT: Analyze ALL articles. Always output your title and summary in ENGLISH.
 
 Your job is to find REAL BUSINESS NEWS (including official press releases and blog announcements). Include:
@@ -104,6 +106,7 @@ Otherwise, return JSON:
       "title": "Clear headline in ENGLISH (max 100 chars)",
       "summary": "2-3 sentence summary in ENGLISH (max 500 chars). Focus on the strategic implication.",
       "threat_level": 1-5,
+      "impact_score": 0-100,
       "date": "YYYY-MM-DD",
       "source_url": "The actual URL",
       "region": "MENA" | "EUROPE" | "NORTH_AMERICA" | "APAC" | "GLOBAL",
@@ -121,6 +124,18 @@ Threat Level Guide:
 1: Routine news
 3: Moderate competitive move
 5: Critical strategic threat (e.g. major new product in your core market)
+
+Impact Score Guide (0-100):
+Start with a base score:
+- Routine news / minor updates: base 10
+- Moderate business news: base 20-30
+- Significant competitive move: base 40-50
+
+Then ADD bonuses (cap total at 100):
+- M&A activity (Sales, Mergers, Acquisitions, Major Funding Rounds): +40 points
+- Major enterprise contracts (Airports, Malls, Large Enterprise rollouts): +30 points
+{vip_competitor_instruction}
+{priority_region_instruction}
 """
 
 # Date Logic

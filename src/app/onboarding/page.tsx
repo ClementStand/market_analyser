@@ -85,6 +85,12 @@ export default function OnboardingPage() {
                     })
 
                     if (newData.status === 'completed') {
+                        // Send completion email notification
+                        fetch('/api/send-completion-email', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ jobId }),
+                        }).catch(() => {})
                         setTimeout(() => {
                             router.push('/')
                             router.refresh()
@@ -110,6 +116,12 @@ export default function OnboardingPage() {
 
                     if (data.status === 'completed') {
                         if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+                        // Send completion email notification
+                        fetch('/api/send-completion-email', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ jobId }),
+                        }).catch(() => {})
                         setTimeout(() => {
                             router.push('/')
                             router.refresh()

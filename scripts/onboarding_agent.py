@@ -142,6 +142,8 @@ async def process_competitor(competitor, org=None, job_id=None, processed=0, tot
     if isinstance(org_keywords, str):
         org_keywords = [k.strip() for k in org_keywords.split(',') if k.strip()]
     org_industry_context = f"developments in the {org_industry} industry" if org_industry else None
+    org_vip_competitors = (org.get('vipCompetitors') if org else None) or []
+    org_priority_regions = (org.get('priorityRegions') if org else None) or []
 
     update_phase("Enriching Data")
     
@@ -196,7 +198,8 @@ async def process_competitor(competitor, org=None, job_id=None, processed=0, tot
     saved_count = 0
     analyzed_data = await news_fetcher.analyze_with_claude_async(
         competitor['name'], articles, days_back,
-        company_name=org_company_name, industry=org_industry
+        company_name=org_company_name, industry=org_industry,
+        vip_competitors=org_vip_competitors, priority_regions=org_priority_regions
     )
 
     if analyzed_data and 'news_items' in analyzed_data:
@@ -230,7 +233,8 @@ async def process_competitor(competitor, org=None, job_id=None, processed=0, tot
         
         recent_analyzed = await news_fetcher.analyze_with_claude_async(
             competitor['name'], new_recent, 7,
-            company_name=org_company_name, industry=org_industry
+            company_name=org_company_name, industry=org_industry,
+            vip_competitors=org_vip_competitors, priority_regions=org_priority_regions
         )
         recent_saved = 0
         if recent_analyzed and 'news_items' in recent_analyzed:
@@ -246,6 +250,85 @@ async def process_competitor(competitor, org=None, job_id=None, processed=0, tot
         print(f"    Phase 2: No new articles beyond Phase 1")
 
     print(f"    ✅ Total: {saved_count} news items for {competitor['name']}")
+
+
+def send_completion_email(org_id, job_id):
+    """Send analysis completion email via Resend API. Skips silently on failure."""
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    if not resend_api_key:
+        print("    ⚠️ RESEND_API_KEY not configured, skipping email")
+        return
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if email already sent for this job
+        cursor.execute('SELECT "emailSent" FROM "FetchJob" WHERE id = %s', (job_id,))
+        job_row = cursor.fetchone()
+        if job_row and job_row.get('emailSent'):
+            conn.close()
+            return
+
+        # Get org name and user email
+        cursor.execute('SELECT name FROM "Organization" WHERE id = %s', (org_id,))
+        org_row = cursor.fetchone()
+        cursor.execute('SELECT email FROM "UserProfile" WHERE "organizationId" = %s LIMIT 1', (org_id,))
+        user_row = cursor.fetchone()
+        conn.close()
+
+        if not org_row or not user_row:
+            print("    ⚠️ Could not find org/user for email")
+            return
+
+        org_name = org_row['name']
+        user_email = user_row['email']
+        dashboard_url = os.getenv("APP_URL", "https://market-analyser-dtcf.vercel.app")
+
+        # Send via Resend API
+        import httpx
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": "Market Analyser <onboarding@resend.dev>",
+                "to": [user_email],
+                "subject": f"Analysis Complete - {org_name}",
+                "html": f"""
+                    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 32px;">
+                        <h2 style="color: #0f172a; margin-bottom: 16px;">Analysis Complete</h2>
+                        <p style="color: #475569; line-height: 1.6;">
+                            Your competitor intelligence analysis for <strong>{org_name}</strong> has finished.
+                            New articles have been added to your dashboard.
+                        </p>
+                        <a href="{dashboard_url}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #0891b2; color: white; text-decoration: none; border-radius: 8px; font-weight: 500;">
+                            View Dashboard
+                        </a>
+                        <p style="color: #94a3b8; font-size: 12px; margin-top: 32px;">
+                            Market Analyser - Competitor Intelligence Platform
+                        </p>
+                    </div>
+                """,
+            },
+            timeout=10,
+        )
+
+        if response.status_code == 200:
+            # Mark email as sent in DB
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE "FetchJob" SET "emailSent" = true WHERE id = %s', (job_id,))
+            conn.commit()
+            conn.close()
+            print(f"    ✅ Completion email sent to {user_email}")
+        else:
+            print(f"    ⚠️ Email send failed: {response.status_code} {response.text}")
+
+    except Exception as e:
+        print(f"    ⚠️ Email send error: {e}")
 
 
 async def run_onboarding(competitors, org_id=None, job_id=None):
@@ -266,6 +349,8 @@ async def run_onboarding(competitors, org_id=None, job_id=None):
 
     if job_id:
         news_fetcher.write_status('completed', processed=total, total=total, job_id=job_id)
+        # Send completion email server-side (handles case where user closed the page)
+        send_completion_email(org_id, job_id)
 
     print("Onboarding Agent Complete.")
 

@@ -50,6 +50,7 @@ export async function POST(req: Request) {
                     competitor: { organizationId: orgId },
                 },
                 orderBy: [
+                    { impactScore: 'desc' },
                     { threatLevel: 'desc' },
                     { date: 'desc' }
                 ],

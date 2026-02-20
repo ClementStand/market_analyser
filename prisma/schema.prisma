@@ -5,6 +5,8 @@ model Organization {
   industry    String?
   keywords    String[] // Target keywords for this org
   regions     String[] // Target regions for this org
+  vipCompetitors   String[] // Names of high-priority competitors for scoring boost
+  priorityRegions  String[] // Priority regions for scoring boost (e.g. "KSA", "Dubai")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -57,6 +59,7 @@ model CompetitorNews {
   title         String
   summary       String
   threatLevel   Int
+  impactScore   Int?       // 0-100 weighted impact score
   region        String?    // "North America" | "Europe" | "MENA" | "APAC" | "South America" | "Global"
   details       String     // JSON string with location, financial_value, partners, products
   sourceUrl     String     @unique
@@ -67,6 +70,7 @@ model CompetitorNews {
   @@index([competitorId, date])
   @@index([eventType])
   @@index([threatLevel])
+  @@index([impactScore])
   @@index([isRead])
 }
 
