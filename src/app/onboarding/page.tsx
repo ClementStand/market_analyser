@@ -90,7 +90,7 @@ export default function OnboardingPage() {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ jobId }),
-                        }).catch(() => {})
+                        }).catch(() => { })
                         setTimeout(() => {
                             router.push('/')
                             router.refresh()
@@ -121,7 +121,7 @@ export default function OnboardingPage() {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ jobId }),
-                        }).catch(() => {})
+                        }).catch(() => { })
                         setTimeout(() => {
                             router.push('/')
                             router.refresh()
@@ -440,7 +440,19 @@ export default function OnboardingPage() {
                                             <div className="flex items-start justify-between">
                                                 <div>
                                                     <h3 className={`font-semibold ${isSelected ? 'text-cyan-400' : 'text-slate-200'}`}>{rec.name}</h3>
-                                                    <p className="text-xs text-slate-500 mt-1">{rec.website}</p>
+                                                    {rec.website ? (
+                                                        <a
+                                                            href={rec.website}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            className="text-xs text-cyan-500 hover:text-cyan-400 hover:underline mt-1 block w-fit"
+                                                        >
+                                                            {rec.website}
+                                                        </a>
+                                                    ) : (
+                                                        <p className="text-xs text-slate-500 mt-1">No website provided</p>
+                                                    )}
                                                     <p className="text-sm text-slate-400 mt-2">{rec.reason}</p>
                                                 </div>
                                                 <div className={`w-6 h-6 rounded border flex items-center justify-center ${isSelected ? 'bg-cyan-600 border-cyan-600' : 'border-slate-600'}`}>

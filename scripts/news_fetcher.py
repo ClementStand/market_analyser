@@ -15,6 +15,7 @@ import os
 import time
 import uuid
 import re
+import urllib.parse
 import anthropic
 from google import genai as google_genai
 from google.genai import types as genai_types
@@ -1048,34 +1049,52 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
                                          industry_keywords=industry_keywords, industry_context=industry_context)
 
     if not articles:
-        print(" — no articles")
-        return 0
+        print(" — no articles (triggering fallback)")
+        analysis = None # Bypass claude
+    else:
 
-    if existing_urls:
-        new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
-        skipped = len(articles) - len(new_articles)
-        if skipped > 0:
-            print(f" — {len(articles)} found, {skipped} known", end="")
-        if not new_articles:
-            print(" — all known, skip")
-            return 0
-        articles = new_articles
+        if existing_urls:
+            new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
+            skipped = len(articles) - len(new_articles)
+            if skipped > 0:
+                print(f" — {len(articles)} found, {skipped} known", end="")
+            if not new_articles:
+                print(" — all known, (triggering fallback)")
+                analysis = None
+            else:
+                articles = new_articles
 
-    print(f" — {len(articles)} new...", end="")
+        if articles:
+            print(f" — {len(articles)} new...", end="")
 
-    # Fetch recent titles for dedup context
-    recent_titles = await asyncio.to_thread(get_recent_titles, competitor['id'], days=5)
+            # Fetch recent titles for dedup context
+            recent_titles = await asyncio.to_thread(get_recent_titles, competitor['id'], days=5)
 
-    analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
-                                               company_name=company_name, industry=industry,
-                                               recent_titles=recent_titles,
-                                               vip_competitors=vip_competitors,
-                                               priority_regions=priority_regions)
+            analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
+                                                       company_name=company_name, industry=industry,
+                                                       recent_titles=recent_titles,
+                                                       vip_competitors=vip_competitors,
+                                                       priority_regions=priority_regions)
 
     if not analysis or analysis.get('no_relevant_news'):
-        return 0
+        pass # Allow fallback to catch this
 
-    news_items = analysis.get('news_items', [])
+    news_items = analysis.get('news_items', []) if analysis else []
+
+    # ALL-IMPORTANT FALLBACK: If 0 news items are returned from APIs or Claude filters them all,
+    # generate a baseline entry so the dashboard isn't completely empty.
+    if not news_items:
+        news_items = [{
+            'title': f'{name} - Monitoring Active',
+            'summary': f'No highly relevant strategic news found for {name} in the past {days_back or 7} days. We are actively monitoring this competitor for new developments.',
+            'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'),
+            'source_url': f'https://google.com/search?q={urllib.parse.quote(name)}+news',
+            'event_type': 'Monitoring Status',
+            'threat_level': 1,
+            'impact_score': 0,
+            '_search_region': 'system_generated'
+        }]
+
     saved = 0
     # Use a single shared connection for all saves in this competitor batch
     conn = await asyncio.to_thread(get_db_connection)

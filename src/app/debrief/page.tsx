@@ -2,7 +2,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { format, subDays } from 'date-fns'
 import { Sidebar } from '@/components/Sidebar'
-import { Star, ExternalLink, FileText } from 'lucide-react'
+import { Star, ExternalLink, FileText, RefreshCw, Loader2 } from 'lucide-react'
 
 export default function WeeklyDebrief() {
     const [debrief, setDebrief] = useState<string | null>(null)
@@ -11,6 +11,7 @@ export default function WeeklyDebrief() {
     const [periodStart, setPeriodStart] = useState<Date | null>(null)
     const [periodEnd, setPeriodEnd] = useState<Date | null>(null)
     const [topArticles, setTopArticles] = useState<any[]>([])
+    const [isGenerating, setIsGenerating] = useState(false)
 
     useEffect(() => {
         const fetchData = async () => {
@@ -54,6 +55,24 @@ export default function WeeklyDebrief() {
 
     const displayStart = periodStart || subDays(new Date(), 7)
     const displayEnd = periodEnd || new Date()
+
+    const handleGenerateDebrief = async () => {
+        setIsGenerating(true)
+        try {
+            const res = await fetch('/api/debrief/generate', {
+                method: 'POST'
+            })
+            if (!res.ok) throw new Error('Failed to generate debrief')
+
+            // Reload the page silently to fetch new debrief
+            window.location.reload()
+        } catch (e) {
+            console.error('Failed to generate:', e)
+            alert('Failed to generate debrief')
+        } finally {
+            setIsGenerating(false)
+        }
+    }
 
     // Extract the Executive Summary from the debrief markdown
     const getShortSummary = (md: string): string[] => {
@@ -102,13 +121,26 @@ export default function WeeklyDebrief() {
                                 {`${format(displayStart, 'MMM d')} — ${format(displayEnd, 'MMM d, yyyy')}`}
                             </p>
                         </div>
-                        <button
-                            onClick={handlePrint}
-                            disabled={!debrief && topArticles.length === 0}
-                            className="print:hidden px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-sm transition-colors disabled:opacity-50"
-                        >
-                            Print / PDF
-                        </button>
+                        <div className="flex gap-3 print:hidden">
+                            <button
+                                onClick={handleGenerateDebrief}
+                                disabled={isGenerating}
+                                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-md text-sm transition-colors shadow-lg hover:shadow-cyan-900/20 flex items-center gap-2 disabled:opacity-50"
+                            >
+                                {isGenerating ? (
+                                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Generating...</>
+                                ) : (
+                                    <><RefreshCw className="w-4 h-4 mr-2" /> Generate Target Debrief</>
+                                )}
+                            </button>
+                            <button
+                                onClick={handlePrint}
+                                disabled={!debrief && topArticles.length === 0}
+                                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-sm transition-colors disabled:opacity-50"
+                            >
+                                Print / PDF
+                            </button>
+                        </div>
                     </div>
 
                     {/* Loading */}
@@ -186,11 +218,8 @@ export default function WeeklyDebrief() {
                             {!debrief && topArticles.length === 0 && (
                                 <div className="py-20 text-center border-2 border-dashed border-slate-800 rounded-xl bg-slate-900/50">
                                     <p className="text-slate-500">
-                                        No debrief generated yet. Run the generator script locally:
+                                        No debrief generated yet. Click "Generate Target Debrief" above to create one.
                                     </p>
-                                    <code className="block mt-4 text-cyan-400 text-sm bg-slate-900 px-4 py-2 rounded-lg inline-block">
-                                        ./.venv/bin/python scripts/debrief_generator.py
-                                    </code>
                                 </div>
                             )}
                         </>

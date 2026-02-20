@@ -1,11 +1,9 @@
 {
   "status": "completed",
   "current_competitor": null,
-  "processed": 5,
-  "total": 5,
+  "processed": 1,
+  "total": 1,
   "percent_complete": 100,
   "estimated_seconds_remaining": 0,
-  "started_at": null,
-  "completed_at": "2026-02-18T11:21:37.360920+00:00",
   "error": null
 }
