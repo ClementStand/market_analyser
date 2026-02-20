@@ -879,6 +879,17 @@ async def gather_all_articles(competitor, days_back, regions, industry_keywords=
     if validated_out > 0:
         print(f" ({validated_out} failed URL validation)", end="")
 
+    # FALLBACK SEARCH: If strict queries yielded absolutely nothing, do a broad "name merely mentioned" search
+    if not merged:
+        print(f" [Loosening constraints]...", end="")
+        fallback = await search_serper_async(name, 'news', 'global', 5)
+        if fallback:
+            for r in fallback:
+                 if is_news_url(r.get('link', '')):
+                     r['_search_region'] = 'fallback'
+                     merged.append(r)
+            merged = await validate_urls_async(merged)
+
     return merged
 
 
@@ -1081,18 +1092,19 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
 
     news_items = analysis.get('news_items', []) if analysis else []
 
-    # ALL-IMPORTANT FALLBACK: If 0 news items are returned from APIs or Claude filters them all,
-    # generate a baseline entry so the dashboard isn't completely empty.
-    if not news_items:
+    # FALLBACK: Ensure no business receives 0 news articles by salvaging the top raw article if Claude rejected all
+    if not news_items and articles:
+        # Pick the most "recent" or first raw article
+        top_article = articles[0]
         news_items = [{
-            'title': f'{name} - Monitoring Active',
-            'summary': f'No highly relevant strategic news found for {name} in the past {days_back or 7} days. We are actively monitoring this competitor for new developments.',
-            'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'),
-            'source_url': f'https://google.com/search?q={urllib.parse.quote(name)}+news',
-            'event_type': 'Monitoring Status',
+            'title': sanitize_text(top_article.get('title', f'{name} Update'))[:100],
+            'summary': sanitize_text(top_article.get('snippet', top_article.get('description', 'No summary available.')))[:300],
+            'date': top_article.get('date', datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')),
+            'source_url': top_article.get('link', ''),
+            'event_type': 'General Update',
             'threat_level': 1,
-            'impact_score': 0,
-            '_search_region': 'system_generated'
+            'impact_score': 10,
+            '_search_region': top_article.get('_search_region', 'fallback')
         }]
 
     saved = 0

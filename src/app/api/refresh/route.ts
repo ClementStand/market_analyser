@@ -89,6 +89,7 @@ export async function POST(req: Request) {
             const args = [scriptPath, '--org-id', orgId]
             if (days) args.push('--days', String(days))
             if (competitorName) args.push('--competitor', competitorName)
+            args.push('--job-id', job.id)
 
             console.log(`Spawning: ${pythonCmd} ${args.join(' ')}`)
 
