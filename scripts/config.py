@@ -77,6 +77,8 @@ Today is {today_date}.
 
 IMPORTANT: Analyze ALL articles. Always output your title and summary in ENGLISH.
 
+CRITICAL DATE RULE: For each article, you MUST extract the ACTUAL publication date (from the article byline, "Published Date" field, or text body). Do NOT use today's date as the publication date. If the article text mentions a date like "November 18, 2013" or "Published: Jan 5, 2025", use THAT date. If you truly cannot find any publication date, set "date" to null.
+
 Your job is to find REAL BUSINESS NEWS (including official press releases and blog announcements). Include:
 - New contracts, deals, project wins
 - Partnerships, acquisitions, mergers, joint ventures
@@ -107,7 +109,7 @@ Otherwise, return JSON:
       "summary": "2-3 sentence summary in ENGLISH (max 500 chars). Focus on the strategic implication.",
       "threat_level": 1-5,
       "impact_score": 0-100,
-      "date": "YYYY-MM-DD",
+      "date": "YYYY-MM-DD or null (the ACTUAL original publication date, NOT today's date. Extract from the article byline, metadata, or text. If you cannot determine the real date, use null)",
       "source_url": "The actual URL",
       "region": "MENA" | "EUROPE" | "NORTH_AMERICA" | "APAC" | "GLOBAL",
       "details": {{

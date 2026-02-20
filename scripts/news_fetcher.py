@@ -20,6 +20,8 @@ import anthropic
 from google import genai as google_genai
 from google.genai import types as genai_types
 from dotenv import load_dotenv
+from dateutil import parser as dateutil_parser
+from bs4 import BeautifulSoup
 
 # Load .env.local first, then .env as fallback
 load_dotenv('.env.local')
@@ -201,11 +203,22 @@ def _parse_gemini_grounding(response):
              # Use snippet as title if extracted title is missing or generic
              title = title_source if title_source else snippet[:100]
 
+             # Try to extract date from the line text (e.g. "Nov 18, 2013" or "February 2025")
+             extracted_date = None
+             try:
+                 extracted_date = dateutil_parser.parse(line_clean, fuzzy=True)
+                 if extracted_date.tzinfo is None:
+                     extracted_date = extracted_date.replace(tzinfo=datetime.timezone.utc)
+             except (ValueError, OverflowError):
+                 pass
+
+             date_str = extracted_date.strftime('%Y-%m-%d') if extracted_date else None
+
              articles.append({
                 'title': title,
                 'link': uri,
                 'snippet': snippet,
-                'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'), 
+                'date': date_str,
                 '_search_region': 'gemini_search'
             })
 
@@ -514,7 +527,9 @@ def is_news_url(url):
 
 
 async def validate_urls_async(articles, timeout=5.0, max_concurrent=10):
-    """HEAD-request each article URL. Discard 404/500 and root-only paths (fail-open on timeout)."""
+    """Validate article URLs and extract publication dates from HTML meta tags.
+    Discards 404/500 and root-only paths. Attaches '_meta_date' to articles when found.
+    Fail-open on timeout (keeps the article)."""
     from urllib.parse import urlparse
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -532,12 +547,40 @@ async def validate_urls_async(articles, timeout=5.0, max_concurrent=10):
         if path in GENERIC_PATHS or path == '':
             return None
 
+        # Only attempt meta-tag extraction if article has no date yet
+        needs_date = not article.get('date')
+
         try:
             async with semaphore:
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    resp = await client.head(url)
-                    if resp.status_code >= 400:
-                        return None
+                    if needs_date:
+                        # GET first ~50KB to extract meta tags for date
+                        async with client.stream('GET', url) as resp:
+                            if resp.status_code >= 400:
+                                return None
+                            # Read only first 50KB to avoid downloading huge pages
+                            chunks = []
+                            total = 0
+                            async for chunk in resp.aiter_bytes(4096):
+                                chunks.append(chunk)
+                                total += len(chunk)
+                                if total >= 50000:
+                                    break
+                            html_bytes = b''.join(chunks)
+
+                        # Extract date from HTML meta tags
+                        try:
+                            html_text = html_bytes.decode('utf-8', errors='ignore')
+                            meta_date = extract_date_from_html(html_text)
+                            if meta_date:
+                                article['_meta_date'] = meta_date.strftime('%Y-%m-%d')
+                        except Exception:
+                            pass
+                    else:
+                        # Just HEAD if we already have a date
+                        resp = await client.head(url)
+                        if resp.status_code >= 400:
+                            return None
         except (httpx.TimeoutException, httpx.ConnectError, Exception):
             # Fail-open: keep the article if we can't reach the server
             pass
@@ -596,6 +639,109 @@ def get_organization(org_id):
     org = cursor.fetchone()
     conn.close()
     return org
+
+
+# ---------------------------------------------------------------------------
+# DATE EXTRACTION — Waterfall: Search API → HTML Meta Tags → LLM fallback
+# ---------------------------------------------------------------------------
+
+MAX_ARTICLE_AGE_DAYS = 30  # Hard cap: discard anything older than this
+
+
+def parse_date_safe(date_str):
+    """Parse any date string into a timezone-aware datetime using dateutil.
+    Returns None if parsing fails. Never defaults to today."""
+    if not date_str:
+        return None
+
+    date_str = str(date_str).strip()
+    if not date_str or date_str.lower() in ('unknown', 'null', 'none', 'n/a', ''):
+        return None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Handle relative dates: "3 days ago", "12 hours ago", etc.
+    m = re.match(r'^(\d+)\s+(day|days|hour|hours|min|mins|minute|minutes|second|seconds)\s+ago$', date_str.lower())
+    if m:
+        num = int(m.group(1))
+        unit = m.group(2)
+        if 'day' in unit:
+            return now - datetime.timedelta(days=num)
+        elif 'hour' in unit:
+            return now - datetime.timedelta(hours=num)
+        elif 'min' in unit:
+            return now - datetime.timedelta(minutes=num)
+        elif 'second' in unit:
+            return now - datetime.timedelta(seconds=num)
+
+    # Use dateutil for everything else (handles "Nov 18, 2013", "2024-01-15T10:00:00Z", etc.)
+    try:
+        parsed = dateutil_parser.parse(date_str, fuzzy=True)
+        # Ensure timezone-aware
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed
+    except (ValueError, OverflowError):
+        return None
+
+
+def extract_date_from_html(html_content):
+    """Step B: Extract publication date from HTML meta tags.
+    Returns a timezone-aware datetime or None."""
+    if not html_content:
+        return None
+
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+    except Exception:
+        return None
+
+    # Priority-ordered meta tag selectors
+    selectors = [
+        ('meta', {'property': 'article:published_time'}),
+        ('meta', {'name': 'pubdate'}),
+        ('meta', {'name': 'date'}),
+        ('meta', {'name': 'publish-date'}),
+        ('meta', {'property': 'og:article:published_time'}),
+        ('meta', {'name': 'article.published'}),
+        ('meta', {'itemprop': 'datePublished'}),
+    ]
+
+    for tag_name, attrs in selectors:
+        tag = soup.find(tag_name, attrs=attrs)
+        if tag:
+            content = tag.get('content', '')
+            parsed = parse_date_safe(content)
+            if parsed:
+                return parsed
+
+    # Fallback: <time datetime="..."> (first occurrence)
+    time_tag = soup.find('time', attrs={'datetime': True})
+    if time_tag:
+        parsed = parse_date_safe(time_tag['datetime'])
+        if parsed:
+            return parsed
+
+    return None
+
+
+def is_article_too_old(article_date, max_days=MAX_ARTICLE_AGE_DAYS):
+    """Check if an article is older than the allowed maximum age."""
+    if article_date is None:
+        return True  # No date = can't verify freshness = discard
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if article_date.tzinfo is None:
+        article_date = article_date.replace(tzinfo=datetime.timezone.utc)
+    age = (now - article_date).days
+    return age > max_days
+
+
+def parse_serper_date(date_str):
+    """Parse a Serper date string. Returns 'YYYY-MM-DD' or None (never today's date)."""
+    parsed = parse_date_safe(date_str)
+    if parsed:
+        return parsed.strftime('%Y-%m-%d')
+    return None
 
 
 def get_competitors(org_id=None):
@@ -682,10 +828,30 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
         if impact_score is not None:
             impact_score = max(0, min(100, impact_score))
 
-        date_str = news_item.get('date', now.strftime('%Y-%m-%d'))
-        try:
-            news_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=datetime.timezone.utc)
-        except:
+        # --- WATERFALL DATE RESOLUTION ---
+        # Priority: LLM date → meta tag date → search API date → None (discard)
+        is_fallback = (news_item.get('_search_region') == 'fallback')
+
+        # Step 1: Try the date from Claude/LLM analysis
+        date_str = news_item.get('date')
+        news_date = parse_date_safe(date_str)
+
+        # Step 2: Try meta tag date extracted during URL validation
+        if news_date is None:
+            meta_date_str = news_item.get('_meta_date')
+            news_date = parse_date_safe(meta_date_str)
+            if news_date:
+                print(f" [date:meta]", end="")
+
+        # Step 3: If still no date and not a fallback, discard
+        if news_date is None and not is_fallback:
+            if owns_conn:
+                conn.close()
+            print(f" [Skip: no_date]", end="")
+            return False, "no_date"
+
+        # If fallback with no date, use today (single fallback article per competitor)
+        if news_date is None:
             news_date = now
 
         # Cap future dates to today
@@ -694,28 +860,21 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
 
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
-        # Skip articles older than max_age_days (e.g. 14 days for "Search News 2 weeks")
-        if max_age_days:
-            min_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=max_age_days)
+        # --- STALENESS FILTER (hard cap: 30 days) ---
+        if not is_fallback and is_article_too_old(news_date, MAX_ARTICLE_AGE_DAYS):
+            if owns_conn:
+                conn.close()
+            print(f" [Skip: too_old ({news_date.strftime('%Y-%m-%d')}, max {MAX_ARTICLE_AGE_DAYS}d)]", end="")
+            return False, "too_old"
+
+        # Also enforce the caller's max_age_days if stricter
+        if max_age_days and not is_fallback:
+            min_date = now - datetime.timedelta(days=max_age_days)
             if news_date < min_date:
                 if owns_conn:
                     conn.close()
                 print(f" [Skip: too_old ({news_date.strftime('%Y-%m-%d')}, max {max_age_days}d)]", end="")
                 return False, "too_old"
-
-        # Skip news before configured cutoff
-        cutoff = config.DEFAULT_DATE_CUTOFF
-        if news_date < cutoff:
-            if news_item.get('_search_region') == 'gemini_search':
-                print(f" [Warn: Pre-2025 ({news_date.strftime('%Y-%m-%d')}) but Gemini - Keeping]", end="")
-                if news_date.year < 2024:
-                    news_date = now
-                    news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-            else:
-                if owns_conn:
-                    conn.close()
-                print(f" [Skip: pre_2025 ({news_date.strftime('%Y-%m-%d')})]", end="")
-                return False, "pre_2025"
 
         details = news_item.get('details', {})
         if isinstance(details, dict):
@@ -1012,12 +1171,15 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None, c
 
                 if not result.get('no_relevant_news'):
                     items = result.get('news_items', [])
-                    # Re-attach _search_region from input articles
-                    url_map = {a.get('link', ''): a.get('_search_region') for a in batch}
+                    # Re-attach _search_region and _meta_date from input articles
+                    url_region_map = {a.get('link', ''): a.get('_search_region') for a in batch}
+                    url_meta_date_map = {a.get('link', ''): a.get('_meta_date') for a in batch}
                     for item in items:
                         src = item.get('source_url', '')
-                        if src in url_map:
-                            item['_search_region'] = url_map[src]
+                        if src in url_region_map:
+                            item['_search_region'] = url_region_map[src]
+                        if src in url_meta_date_map and url_meta_date_map[src]:
+                            item['_meta_date'] = url_meta_date_map[src]
                     
                     all_news_items.extend(items)
                     if total_batches > 1:
@@ -1096,15 +1258,22 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
     if not news_items and articles:
         # Pick the most "recent" or first raw article
         top_article = articles[0]
+        # Use our new parser to get the ACTUAL date (returns None if unparseable)
+        actual_date = parse_serper_date(top_article.get('date', ''))
+        # Also carry over meta tag date if available
+        meta_date = top_article.get('_meta_date')
+        if not actual_date and meta_date:
+            actual_date = meta_date
         news_items = [{
             'title': sanitize_text(top_article.get('title', f'{name} Update'))[:100],
             'summary': sanitize_text(top_article.get('snippet', top_article.get('description', 'No summary available.')))[:300],
-            'date': top_article.get('date', datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')),
+            'date': actual_date,
+            '_meta_date': meta_date,
             'source_url': top_article.get('link', ''),
             'event_type': 'General Update',
             'threat_level': 1,
             'impact_score': 10,
-            '_search_region': top_article.get('_search_region', 'fallback')
+            '_search_region': 'fallback'
         }]
 
     saved = 0

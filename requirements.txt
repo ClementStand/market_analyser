@@ -6,3 +6,5 @@ google-genai
 fastapi
 uvicorn
 requests
+python-dateutil
+beautifulsoup4
