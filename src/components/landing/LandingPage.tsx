@@ -5,7 +5,7 @@ import Hero from './Hero'
 import { ProductShowcase } from './ProductShowcase'
 import ProofSection from './ProofSection'
 import FeaturesGrid from './FeaturesGrid'
-import FounderSection from './FounderSection'
+import FounderProfile from './FounderProfile'
 import Footer from './Footer'
 
 export default function LandingPage() {
@@ -16,7 +16,7 @@ export default function LandingPage() {
             <ProductShowcase />
             <FeaturesGrid />
             <ProofSection />
-            <FounderSection />
+            <FounderProfile />
             <Footer />
         </div>
     )

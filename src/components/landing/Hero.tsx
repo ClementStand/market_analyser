@@ -72,12 +72,7 @@ export default function Hero() {
                         Start Scouting for Free
                         <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
                     </Link>
-                    <a
-                        href="#proof"
-                        className="flex items-center gap-2 px-7 py-3.5 text-slate-300 hover:text-white border border-slate-700 hover:border-slate-500 rounded-xl transition-all"
-                    >
-                        View Live Demo
-                    </a>
+
                 </motion.div>
             </div>
         </section>
