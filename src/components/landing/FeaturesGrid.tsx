@@ -3,6 +3,8 @@
 import { motion } from 'framer-motion'
 import { Brain, Zap, Globe, Shield, Sparkles, Search, Activity } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import LiveInterceptsCard from './LiveInterceptsCard'
+import WeeklyBriefingCard from './WeeklyBriefingCard'
 
 const containerVariants = {
     hidden: { opacity: 0 },
@@ -24,28 +26,34 @@ const itemVariants = {
 
 const DiscoveryVisual = () => {
     return (
-        <div className="flex flex-col w-full h-full justify-center items-center p-6 relative overflow-hidden">
-            {/* Search Interface */}
-            <motion.div
-                initial={{ width: "60%" }}
-                whileHover={{ width: "70%" }}
-                className="w-full max-w-sm bg-slate-800/50 border border-slate-700 rounded-lg p-3 flex items-center gap-3 shadow-lg backdrop-blur-sm z-10"
-            >
-                <Search className="w-4 h-4 text-blue-400" />
-                <div className="h-2 w-24 bg-slate-700 rounded animate-pulse" />
-            </motion.div>
+        <div className="flex flex-col w-full h-full justify-center items-center p-6 relative overflow-hidden group">
+            {/* AI Suggestions Mockup */}
+            <div className="w-full max-w-sm bg-slate-900/80 border border-slate-700/50 rounded-xl p-4 shadow-xl backdrop-blur-md z-10">
+                <div className="flex items-center gap-2 mb-4 text-xs font-medium text-amber-400">
+                    <Sparkles className="w-4 h-4 animate-pulse" />
+                    <span>Scoper AI found 3 hidden competitors:</span>
+                </div>
 
-            {/* Floating results (absolute) */}
-            <motion.div
-                className="absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-8 w-64 space-y-2 opacity-0 group-hover:opacity-100 transition-opacity duration-500"
-            >
-                {[1, 2, 3].map((i) => (
-                    <div key={i} className="flex items-center gap-3 p-2 rounded bg-slate-800/80 border border-slate-700/50 backdrop-blur-md translate-x-4 group-hover:translate-x-0 transition-transform duration-500" style={{ transitionDelay: `${i * 100}ms` }}>
-                        <div className="w-6 h-6 rounded-full bg-slate-700" />
-                        <div className="h-2 w-20 bg-slate-600 rounded" />
-                    </div>
-                ))}
-            </motion.div>
+                <div className="space-y-2">
+                    {["IndoorAtlas", "MazeMap", "Pointr"].map((name, i) => (
+                        <div
+                            key={name}
+                            className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/50 opacity-0 translate-y-4 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-500"
+                            style={{ transitionDelay: `${i * 150}ms` }}
+                        >
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border border-slate-600 flex items-center justify-center text-xs font-bold text-slate-300 shadow-inner">
+                                    {name[0]}
+                                </div>
+                                <span className="text-sm font-semibold text-slate-200">{name}</span>
+                            </div>
+                            <button className="px-3 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-medium hover:bg-blue-500/20 transition-colors">
+                                + Track
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
 
             {/* Background Grid */}
             <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] pointer-events-none" />
@@ -103,32 +111,6 @@ const MonitoringVisual = () => {
         </div>
     )
 }
-
-const DebriefVisual = () => {
-    const [typedText, setTypedText] = useState('')
-    const fullText = "## Weekly Summary\n- Competitor X launched AI tool\n- CEO resigned on Tuesday..."
-
-    useEffect(() => {
-        let i = 0
-        const interval = setInterval(() => {
-            setTypedText(fullText.slice(0, i))
-            i++
-            if (i > fullText.length) i = 0
-        }, 50)
-        return () => clearInterval(interval)
-    }, [])
-
-    return (
-        <div className="w-full h-full bg-slate-900 border border-slate-800 rounded-lg p-4 font-mono text-xs text-slate-400 relative overflow-hidden group-hover:border-slate-700 transition-colors">
-            <div className="absolute top-2 right-2">
-                <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
-            </div>
-            <div className="whitespace-pre-wrap">{typedText}</div>
-            <div className="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-slate-950 to-transparent" />
-        </div>
-    )
-}
-
 
 // -- Main Card Component --
 
@@ -208,13 +190,7 @@ export default function FeaturesGrid() {
                     </BentoCard>
 
                     {/* 2. Small: Monitoring */}
-                    <BentoCard
-                        title="24/7 Monitoring"
-                        description="Continuous background scanning of funding rounds, product launches, and strategic shifts."
-                        colSpan={1}
-                    >
-                        <MonitoringVisual />
-                    </BentoCard>
+                    <LiveInterceptsCard />
 
                     {/* 3. Small: Categorization (New!) */}
                     <BentoCard
@@ -225,16 +201,7 @@ export default function FeaturesGrid() {
                         <CategorizationVisual />
                     </BentoCard>
 
-                    {/* 4. Large: Automated Debriefs */}
-                    <BentoCard
-                        title="Automated Debriefs"
-                        description="Executive-grade summaries generated by Claude AI. Get the signal without the noise, delivered directly to your inbox or dashboard."
-                        colSpan={2}
-                    >
-                        <div className="w-full h-full p-6 flex items-center justify-center bg-slate-900/30">
-                            <DebriefVisual />
-                        </div>
-                    </BentoCard>
+                    <WeeklyBriefingCard />
 
                 </motion.div>
             </div>
