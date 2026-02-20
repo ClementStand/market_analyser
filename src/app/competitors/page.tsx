@@ -21,7 +21,12 @@ export default function CompetitorsPage() {
         try {
             const res = await fetch('/api/competitors')
             const data = await res.json()
-            setCompetitors(data)
+            if (Array.isArray(data)) {
+                setCompetitors(data)
+            } else {
+                console.error("Failed to fetch competitors", data)
+                setCompetitors([])
+            }
         } catch (e) {
             console.error(e)
         } finally {
