@@ -49,8 +49,17 @@ export async function updateSession(request: NextRequest) {
         console.log(`[Middleware] getUser error: ${error.message} (${error.status})`)
     }
 
+    // Treat unverified email users as unauthenticated
+    const isVerifiedUser = user && user.email_confirmed_at
+
+    // Public routes that don't require auth
+    const isPublicRoute = request.nextUrl.pathname === '/' ||
+        request.nextUrl.pathname.startsWith('/login') ||
+        request.nextUrl.pathname.startsWith('/signup') ||
+        request.nextUrl.pathname.startsWith('/auth')
+
     // Protect routes
-    if (!user && !request.nextUrl.pathname.startsWith('/login') && !request.nextUrl.pathname.startsWith('/signup') && !request.nextUrl.pathname.startsWith('/auth')) {
+    if (!isVerifiedUser && !isPublicRoute) {
         console.log(`[Middleware] Unauthorized access to: ${request.nextUrl.pathname}`)
         // API routes: Return 401 JSON
         if (request.nextUrl.pathname.startsWith('/api/')) {
@@ -64,7 +73,7 @@ export async function updateSession(request: NextRequest) {
     }
 
     // If user is logged in but hasn't completed onboarding, redirect to /onboarding
-    if (user && !request.nextUrl.pathname.startsWith('/onboarding') && !request.nextUrl.pathname.startsWith('/auth') && !request.nextUrl.pathname.startsWith('/api/')) {
+    if (isVerifiedUser && !request.nextUrl.pathname.startsWith('/onboarding') && !request.nextUrl.pathname.startsWith('/auth') && !request.nextUrl.pathname.startsWith('/api/')) {
         try {
             const profile = await prisma.userProfile.findUnique({
                 where: { email: user.email! }
