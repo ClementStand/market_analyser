@@ -327,6 +327,9 @@ async def search_news_async(competitor_name, regions_to_search, days_back=None, 
     search_name = re.sub(r'\s*\(.*?\)', '', competitor_name).strip()
     queries = []
 
+    # Calculate Google time-bound search parameter from days_back
+    tbs_val = f"qdr:d{days_back}" if days_back else None
+
     # Base topics (contract, launch, financial, etc.)
     for topic in config.DEFAULT_SEARCH_TOPICS:
         queries.append(f'"{search_name}" {topic}')
@@ -356,7 +359,7 @@ async def search_news_async(competitor_name, regions_to_search, days_back=None, 
         for query in queries:
             task_pairs.append((native_region, query))
 
-    tasks = [search_serper_async(q, 'news', r, 10) for r, q in task_pairs]
+    tasks = [search_serper_async(q, 'news', r, 10, tbs_val=tbs_val) for r, q in task_pairs]
     results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
     seen_urls = set()
@@ -645,7 +648,7 @@ def get_organization(org_id):
 # DATE EXTRACTION — Waterfall: Search API → HTML Meta Tags → LLM fallback
 # ---------------------------------------------------------------------------
 
-MAX_ARTICLE_AGE_DAYS = 30  # Hard cap: discard anything older than this
+MAX_ARTICLE_AGE_DAYS = 400  # Safety cap: discard anything older than ~13 months (covers 365-day macro scan)
 
 
 def parse_date_safe(date_str):
@@ -829,7 +832,9 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
             impact_score = max(0, min(100, impact_score))
 
         # --- WATERFALL DATE RESOLUTION ---
-        # Priority: LLM date → meta tag date → search API date → None (discard)
+        # Priority: LLM date → meta tag date → midpoint estimate
+        # Since Serper TBS now enforces the time window, articles without dates
+        # are safe to keep — they passed Google's recency filter.
         is_fallback = (news_item.get('_search_region') == 'fallback')
 
         # Step 1: Try the date from Claude/LLM analysis
@@ -843,16 +848,15 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
             if news_date:
                 print(f" [date:meta]", end="")
 
-        # Step 3: If still no date and not a fallback, discard
-        if news_date is None and not is_fallback:
-            if owns_conn:
-                conn.close()
-            print(f" [Skip: no_date]", end="")
-            return False, "no_date"
-
-        # If fallback with no date, use today (single fallback article per competitor)
+        # Step 3: If still no date, default to midpoint of the search window
         if news_date is None:
-            news_date = now
+            if max_age_days:
+                midpoint_days = max_age_days // 2
+                news_date = now - datetime.timedelta(days=midpoint_days)
+                print(f" [date:midpoint_{midpoint_days}d]", end="")
+            else:
+                news_date = now
+                print(f" [date:now]", end="")
 
         # Cap future dates to today
         if news_date > now:
@@ -860,14 +864,7 @@ def save_news_item(competitor_id, news_item, conn=None, max_age_days=None):
 
         news_date_str = news_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
-        # --- STALENESS FILTER (hard cap: 30 days) ---
-        if not is_fallback and is_article_too_old(news_date, MAX_ARTICLE_AGE_DAYS):
-            if owns_conn:
-                conn.close()
-            print(f" [Skip: too_old ({news_date.strftime('%Y-%m-%d')}, max {MAX_ARTICLE_AGE_DAYS}d)]", end="")
-            return False, "too_old"
-
-        # Also enforce the caller's max_age_days if stricter
+        # --- STALENESS FILTER (uses caller's max_age_days only) ---
         if max_age_days and not is_fallback:
             min_date = now - datetime.timedelta(days=max_age_days)
             if news_date < min_date:
@@ -1205,10 +1202,76 @@ async def analyze_with_claude_async(competitor_name, articles, days_back=None, c
     return {'news_items': all_news_items} if all_news_items else {'no_relevant_news': True}
 
 
+
+
+# Keywords used for the initial macro scan (Phase 1) — high-impact events only
+MACRO_SCAN_KEYWORDS = ["acquisition", "merger", "funding", "IPO", "bankruptcy", "CEO replacement"]
+
+
+async def _run_single_phase(competitor, regions, existing_urls, days_back, max_age_days,
+                            company_name, industry, industry_keywords, industry_context,
+                            vip_competitors, priority_regions, phase_label=None):
+    """Execute a single search→analyze→save phase for one competitor.
+    Returns (saved_count, all_raw_articles) so the caller can build fallbacks."""
+    name = competitor['name']
+
+    if phase_label:
+        print(f"\n    [{phase_label}]", end="")
+
+    articles = await gather_all_articles(competitor, days_back, regions,
+                                         industry_keywords=industry_keywords, industry_context=industry_context)
+    analysis = None
+
+    if not articles:
+        print(" — no articles", end="")
+    else:
+        if existing_urls:
+            new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
+            skipped = len(articles) - len(new_articles)
+            if skipped > 0:
+                print(f" — {len(articles)} found, {skipped} known", end="")
+            if not new_articles:
+                print(" — all known", end="")
+                articles = []
+            else:
+                articles = new_articles
+
+        if articles:
+            print(f" — {len(articles)} new...", end="")
+            recent_titles = await asyncio.to_thread(get_recent_titles, competitor['id'], days=5)
+            analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
+                                                       company_name=company_name, industry=industry,
+                                                       recent_titles=recent_titles,
+                                                       vip_competitors=vip_competitors,
+                                                       priority_regions=priority_regions)
+
+    news_items = analysis.get('news_items', []) if analysis and not analysis.get('no_relevant_news') else []
+
+    saved = 0
+    if news_items:
+        conn = await asyncio.to_thread(get_db_connection)
+        try:
+            for item in news_items:
+                success, status = await asyncio.to_thread(save_news_item, competitor['id'], item, conn, max_age_days)
+                if success:
+                    saved += 1
+                else:
+                    print(f" [Skip: {status}]", end="")
+        finally:
+            conn.close()
+
+    return saved, articles
+
+
 async def fetch_news_for_competitor_async(competitor, regions, existing_urls=None, days_back=None,
                                          company_name=None, industry=None, industry_keywords=None, industry_context=None,
-                                         vip_competitors=None, priority_regions=None):
-    """Async version of fetch_news_for_competitor — uses parallel Serper+Gemini."""
+                                         vip_competitors=None, priority_regions=None,
+                                         is_initial_scan=False):
+    """Async version of fetch_news_for_competitor — uses parallel Serper+Gemini.
+    When is_initial_scan=True, runs a two-phase fetch:
+      Phase 1 (Macro): 365 days, high-impact keywords only (M&A, funding, IPO, etc.)
+      Phase 2 (Micro): 14 days, full broad keyword set
+    """
     name = competitor['name']
     headquarters = competitor.get('headquarters') or ''
     native_region = get_native_region(headquarters)
@@ -1218,53 +1281,61 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
     else:
         print(f"\n  🔍 {name}", end="")
 
-    articles = await gather_all_articles(competitor, days_back, regions,
-                                         industry_keywords=industry_keywords, industry_context=industry_context)
+    if is_initial_scan:
+        print(" [INITIAL SCAN]", end="")
 
-    if not articles:
-        print(" — no articles (triggering fallback)")
-        analysis = None # Bypass claude
+    total_saved = 0
+    all_articles = []
+
+    if is_initial_scan:
+        # --- Phase 1: Macro Search (365 days, high-impact keywords only) ---
+        macro_saved, macro_articles = await _run_single_phase(
+            competitor, regions, existing_urls,
+            days_back=365, max_age_days=400,
+            company_name=company_name, industry=industry,
+            industry_keywords=MACRO_SCAN_KEYWORDS, industry_context=industry_context,
+            vip_competitors=vip_competitors, priority_regions=priority_regions,
+            phase_label="MACRO 365d"
+        )
+        total_saved += macro_saved
+        all_articles.extend(macro_articles or [])
+
+        # Update existing_urls with what we just saved to avoid Phase 2 duplicates
+        if macro_articles:
+            saved_urls = {a.get('link', '') for a in macro_articles}
+            existing_urls = (existing_urls or set()) | saved_urls
+
+        # --- Phase 2: Micro Search (14 days, full keywords) ---
+        micro_saved, micro_articles = await _run_single_phase(
+            competitor, regions, existing_urls,
+            days_back=14, max_age_days=14,
+            company_name=company_name, industry=industry,
+            industry_keywords=industry_keywords, industry_context=industry_context,
+            vip_competitors=vip_competitors, priority_regions=priority_regions,
+            phase_label="MICRO 14d"
+        )
+        total_saved += micro_saved
+        all_articles.extend(micro_articles or [])
     else:
+        # --- Regular incremental fetch (single phase) ---
+        phase_saved, phase_articles = await _run_single_phase(
+            competitor, regions, existing_urls,
+            days_back=days_back, max_age_days=days_back,
+            company_name=company_name, industry=industry,
+            industry_keywords=industry_keywords, industry_context=industry_context,
+            vip_competitors=vip_competitors, priority_regions=priority_regions
+        )
+        total_saved += phase_saved
+        all_articles.extend(phase_articles or [])
 
-        if existing_urls:
-            new_articles = [a for a in articles if a.get('link', '') not in existing_urls]
-            skipped = len(articles) - len(new_articles)
-            if skipped > 0:
-                print(f" — {len(articles)} found, {skipped} known", end="")
-            if not new_articles:
-                print(" — all known, (triggering fallback)")
-                analysis = None
-            else:
-                articles = new_articles
-
-        if articles:
-            print(f" — {len(articles)} new...", end="")
-
-            # Fetch recent titles for dedup context
-            recent_titles = await asyncio.to_thread(get_recent_titles, competitor['id'], days=5)
-
-            analysis = await analyze_with_claude_async(name, articles, days_back=days_back,
-                                                       company_name=company_name, industry=industry,
-                                                       recent_titles=recent_titles,
-                                                       vip_competitors=vip_competitors,
-                                                       priority_regions=priority_regions)
-
-    if not analysis or analysis.get('no_relevant_news'):
-        pass # Allow fallback to catch this
-
-    news_items = analysis.get('news_items', []) if analysis else []
-
-    # FALLBACK: Ensure no business receives 0 news articles by salvaging the top raw article if Claude rejected all
-    if not news_items and articles:
-        # Pick the most "recent" or first raw article
-        top_article = articles[0]
-        # Use our new parser to get the ACTUAL date (returns None if unparseable)
+    # FALLBACK: Ensure no business receives 0 news articles by salvaging the top raw article
+    if total_saved == 0 and all_articles:
+        top_article = all_articles[0]
         actual_date = parse_serper_date(top_article.get('date', ''))
-        # Also carry over meta tag date if available
         meta_date = top_article.get('_meta_date')
         if not actual_date and meta_date:
             actual_date = meta_date
-        news_items = [{
+        fallback_item = {
             'title': sanitize_text(top_article.get('title', f'{name} Update'))[:100],
             'summary': sanitize_text(top_article.get('snippet', top_article.get('description', 'No summary available.')))[:300],
             'date': actual_date,
@@ -1274,26 +1345,22 @@ async def fetch_news_for_competitor_async(competitor, regions, existing_urls=Non
             'threat_level': 1,
             'impact_score': 10,
             '_search_region': 'fallback'
-        }]
-
-    saved = 0
-    # Use a single shared connection for all saves in this competitor batch
-    conn = await asyncio.to_thread(get_db_connection)
-    try:
-        for item in news_items:
-            success, status = await asyncio.to_thread(save_news_item, competitor['id'], item, conn, days_back)
+        }
+        conn = await asyncio.to_thread(get_db_connection)
+        try:
+            success, status = await asyncio.to_thread(save_news_item, competitor['id'], fallback_item, conn, None)
             if success:
-                saved += 1
+                total_saved += 1
             else:
                 print(f" [Skip: {status}]", end="")
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
-    if saved > 0:
-        print(f" ✅ Saved {saved}", end="")
+    if total_saved > 0:
+        print(f" ✅ Saved {total_saved}", end="")
     else:
         print(f" (0 saved)", end="")
-    return saved
+    return total_saved
 
 
 async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False, regions=None, days=None, competitor_name=None, job_id=None):
@@ -1373,6 +1440,8 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
         print(f"\n🧹 Cleared {deleted} entries")
 
     search_days = None
+    is_initial_scan = clean_start
+
     if days:
         search_days = days
         print(f"\n📅 Last {days} days")
@@ -1387,7 +1456,8 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
             search_days = min(max(days_since + 1, 1), 14)
             print(f"\n📅 Auto-range: last {search_days} days")
         else:
-            print(f"\n📅 Full history")
+            is_initial_scan = True
+            print(f"\n📅 Full history (Initial Scan)")
 
     print("📦 Loading URLs...")
     existing_urls = await asyncio.to_thread(get_all_existing_urls, org_id)
@@ -1428,7 +1498,8 @@ async def _fetch_all_news_async_inner(org_id=None, limit=None, clean_start=False
                 c, regions, existing_urls=existing_urls, days_back=search_days,
                 company_name=org_company_name, industry=org_industry,
                 industry_keywords=org_keywords, industry_context=org_industry_context,
-                vip_competitors=org_vip_competitors, priority_regions=org_priority_regions
+                vip_competitors=org_vip_competitors, priority_regions=org_priority_regions,
+                is_initial_scan=is_initial_scan
             )
             for c in batch
         ]
